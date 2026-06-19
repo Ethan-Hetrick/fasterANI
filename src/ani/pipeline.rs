@@ -300,7 +300,7 @@ pub fn run() -> io::Result<()> {
     let Some(args) = parse_cli_args()? else {
         return Ok(());
     };
-    let progress_enabled: bool = true;
+    let progress_enabled: bool = args.verbose;
     let performance_metrics_enabled: bool = performance_metrics_enabled(&args);
     let runtime_options: RuntimeOptions = RuntimeOptions {
         progress_enabled,
@@ -308,13 +308,11 @@ pub fn run() -> io::Result<()> {
         worker_threads: args.threads,
     };
     check_memory_limit("startup", runtime_options)?;
-    if progress_enabled
-        && !fastani_compatible_fragment_mode(
-            args.fragment_length,
-            args.fragment_stride,
-            args.min_fragment_length,
-        )
-    {
+    if !fastani_compatible_fragment_mode(
+        args.fragment_length,
+        args.fragment_stride,
+        args.min_fragment_length,
+    ) {
         eprintln!(
             "WARNING\tadaptive fragment mode enabled\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}",
             args.fragment_length, args.fragment_stride, args.min_fragment_length

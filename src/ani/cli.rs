@@ -20,8 +20,6 @@ pub(crate) struct CliArgs {
     pub(crate) out_path: Option<PathBuf>,
     pub(crate) mapping_stats_path: Option<PathBuf>,
     pub(crate) bgzip: bool,
-    // Only read by the debug-only performance metrics path; parsed but unused in release builds.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub(crate) verbose: bool,
     pub(crate) threads: usize,
     pub(crate) freq_threshold_percent: f64,
