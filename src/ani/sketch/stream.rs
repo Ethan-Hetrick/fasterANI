@@ -16,20 +16,20 @@ use rayon::prelude::*;
 use crate::ani::{
     align_up, canonical_minimizers_with_positions, check_memory_limit, checked_section_end,
     effective_index_build_mode, emit_progress, mapped_length_from_fragment_ranges, memory_mib,
-    open_fasta_reader, partition_build_plan, sketch_reference_name, slice_as_bytes,
-    slice_as_bytes_mut, split_sequence_ranges, write_contig_name_sidecar, write_padding,
-    CachedReferenceMetadata, ContigRecord, GroupedKeyRecord, IndexBuildMode, MinimizerKey,
-    PartitionBuildPlan, PartitionGroupResult, PartitionHitRecord, PartitionWriters,
-    ReferenceContigName, ReferenceFile, ReferenceHitMap, ReferenceMinimizer, ReferenceSketch,
-    RuntimeOptions, ScratchFile, SeedHit, SketchBuildStats, SketchOutput, SketchParams,
-    PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL, SKETCH_KEY_MODE,
-    SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
+    open_fasta_reader, partition_build_plan, slice_as_bytes, slice_as_bytes_mut,
+    split_sequence_ranges, write_contig_name_sidecar, write_padding, CachedReferenceMetadata,
+    ContigRecord, FastaInput, GroupedKeyRecord, IndexBuildMode, MinimizerKey, PartitionBuildPlan,
+    PartitionGroupResult, PartitionHitRecord, PartitionWriters, ReferenceContigName, ReferenceFile,
+    ReferenceHitMap, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
+    SketchBuildStats, SketchOutput, SketchParams, PARTITION_BUFFER_RECORDS,
+    REFERENCE_PROGRESS_INTERVAL, SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC,
+    SKETCH_VERSION,
 };
 
 impl ReferenceSketch {
     /// Build a reference sketch cache while streaming contig minimizers through scratch files.
     pub(crate) fn collect_and_save_streaming(
-        reference_paths: &[String],
+        references: &[FastaInput],
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
@@ -42,7 +42,7 @@ impl ReferenceSketch {
             effective_index_build_mode(index_build_mode, estimated_minimizers);
         match effective_mode {
             IndexBuildMode::Hash => Self::collect_and_save_streaming_hash(
-                reference_paths,
+                references,
                 params,
                 cache_path,
                 tmp_dir,
@@ -50,7 +50,7 @@ impl ReferenceSketch {
                 runtime_options,
             ),
             IndexBuildMode::Partitioned => Self::collect_and_save_streaming_partitioned(
-                reference_paths,
+                references,
                 params,
                 cache_path,
                 tmp_dir,
@@ -64,7 +64,7 @@ impl ReferenceSketch {
 
     /// Build a reference sketch cache using the in-memory minimizer hit map.
     pub(crate) fn collect_and_save_streaming_hash(
-        reference_paths: &[String],
+        references: &[FastaInput],
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
@@ -89,15 +89,15 @@ impl ReferenceSketch {
             BufWriter::new(reference_minimizer_file);
         let mut reference_minimizer_count: usize = 0usize;
         let mut total_seed_hits: usize = 0usize;
-        files.reserve(reference_paths.len());
-        contig_records.reserve(reference_paths.len());
+        files.reserve(references.len());
+        contig_records.reserve(references.len());
 
         if runtime_options.progress_enabled {
             emit_progress(
                 "reference_build",
                 &format!(
                     "event=start\tmode=streaming\tfiles_total={}\tsplit_n_run={split_n_run}\ttmp={}",
-                    reference_paths.len(),
+                    references.len(),
                     reference_minimizer_scratch.path.display()
                 ),
                 build_start,
@@ -105,9 +105,9 @@ impl ReferenceSketch {
         }
         check_memory_limit("streaming reference build start", runtime_options)?;
 
-        for (file_id, reference_path) in reference_paths.iter().enumerate() {
+        for (file_id, reference) in references.iter().enumerate() {
             let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
-                open_fasta_reader(reference_path)?;
+                open_fasta_reader(&reference.open)?;
             let mut mapped_length: u64 = 0u64;
 
             for result in reader.records() {
@@ -115,7 +115,8 @@ impl ReferenceSketch {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "failed to read FASTA record from reference {reference_path}: {err}"
+                            "failed to read FASTA record from reference {}: {err}",
+                            reference.label
                         ),
                     )
                 })?;
@@ -205,20 +206,20 @@ impl ReferenceSketch {
             }
 
             files.push(ReferenceFile {
-                path: sketch_reference_name(reference_path),
+                path: reference.label.clone(),
                 mapped_length,
             });
 
             let files_done: usize = file_id + 1;
             if runtime_options.progress_enabled
                 && (files_done.is_multiple_of(REFERENCE_PROGRESS_INTERVAL)
-                    || files_done == reference_paths.len())
+                    || files_done == references.len())
             {
                 emit_progress(
                     "reference_build",
                     &format!(
                         "event=files\tmode=streaming\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tunique_minimizers={}\tseed_hits={total_seed_hits}",
-                        reference_paths.len(),
+                        references.len(),
                         contig_records.len(),
                         index.len()
                     ),
@@ -228,7 +229,7 @@ impl ReferenceSketch {
             check_memory_limit(
                 &format!(
                     "streaming reference build after {files_done}/{} files",
-                    reference_paths.len()
+                    references.len()
                 ),
                 runtime_options,
             )?;
@@ -242,7 +243,7 @@ impl ReferenceSketch {
                 "reference_build",
                 &format!(
                     "event=complete\tmode=streaming\tfiles_done={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tunique_minimizers={}\tseed_hits={total_seed_hits}",
-                    reference_paths.len(),
+                    references.len(),
                     contig_records.len(),
                     index.len()
                 ),
@@ -277,7 +278,7 @@ impl ReferenceSketch {
 
     /// Build a reference sketch cache using disk-partitioned minimizer hit records.
     pub(crate) fn collect_and_save_streaming_partitioned(
-        reference_paths: &[String],
+        references: &[FastaInput],
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
@@ -309,15 +310,15 @@ impl ReferenceSketch {
             BufWriter::new(reference_minimizer_file);
         let mut reference_minimizer_count: usize = 0usize;
         let mut total_seed_hits: usize = 0usize;
-        files.reserve(reference_paths.len());
-        contig_records.reserve(reference_paths.len());
+        files.reserve(references.len());
+        contig_records.reserve(references.len());
 
         if runtime_options.progress_enabled {
             emit_progress(
                 "reference_build",
                 &format!(
                     "event=start\tmode=streaming\tindex_build_mode=partitioned\tfiles_total={}\tsplit_n_run={split_n_run}\tpartitions={}\testimated_minimizers={estimated_minimizers}\testimated_record_mib={:.3}\ttarget_partition_mib={:.3}\ttmp={}",
-                    reference_paths.len(),
+                    references.len(),
                     partition_plan.partition_count,
                     memory_mib(partition_plan.estimated_record_bytes),
                     memory_mib(partition_plan.target_partition_bytes),
@@ -328,9 +329,9 @@ impl ReferenceSketch {
         }
         check_memory_limit("partitioned reference build start", runtime_options)?;
 
-        for (file_id, reference_path) in reference_paths.iter().enumerate() {
+        for (file_id, reference) in references.iter().enumerate() {
             let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
-                open_fasta_reader(reference_path)?;
+                open_fasta_reader(&reference.open)?;
             let mut mapped_length: u64 = 0u64;
 
             for result in reader.records() {
@@ -338,7 +339,8 @@ impl ReferenceSketch {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "failed to read FASTA record from reference {reference_path}: {err}"
+                            "failed to read FASTA record from reference {}: {err}",
+                            reference.label
                         ),
                     )
                 })?;
@@ -436,20 +438,20 @@ impl ReferenceSketch {
             }
 
             files.push(ReferenceFile {
-                path: sketch_reference_name(reference_path),
+                path: reference.label.clone(),
                 mapped_length,
             });
 
             let files_done: usize = file_id + 1;
             if runtime_options.progress_enabled
                 && (files_done.is_multiple_of(REFERENCE_PROGRESS_INTERVAL)
-                    || files_done == reference_paths.len())
+                    || files_done == references.len())
             {
                 emit_progress(
                     "reference_build",
                     &format!(
                         "event=files\tmode=streaming\tindex_build_mode=partitioned\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tseed_hits={total_seed_hits}\tpartitions={}",
-                        reference_paths.len(),
+                        references.len(),
                         contig_records.len(),
                         partition_plan.partition_count
                     ),
@@ -459,7 +461,7 @@ impl ReferenceSketch {
             check_memory_limit(
                 &format!(
                     "partitioned reference build after {files_done}/{} files",
-                    reference_paths.len()
+                    references.len()
                 ),
                 runtime_options,
             )?;
@@ -474,7 +476,7 @@ impl ReferenceSketch {
                 "reference_build",
                 &format!(
                     "event=complete\tmode=streaming\tindex_build_mode=partitioned\tfiles_done={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tseed_hits={total_seed_hits}\tpartitions={}",
-                    reference_paths.len(),
+                    references.len(),
                     contig_records.len(),
                     partition_plan.partition_count
                 ),
@@ -1002,8 +1004,8 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        contig_sidecar_path, IndexBuildMode, ReferenceMinimizer, ReferenceSketch, RuntimeOptions,
-        SketchBuildStats, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
+        contig_sidecar_path, FastaInput, IndexBuildMode, ReferenceMinimizer, ReferenceSketch,
+        RuntimeOptions, SketchBuildStats, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
         DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
@@ -1032,7 +1034,9 @@ mod tests {
             &reference_path,
             format!(">ref\n{}\n", String::from_utf8_lossy(&sequence)),
         )?;
-        let references: Vec<String> = vec![reference_path.to_string_lossy().into_owned()];
+        let references: Vec<FastaInput> = vec![FastaInput::from_path(
+            reference_path.to_string_lossy().into_owned(),
+        )];
 
         let hash_stats: SketchBuildStats = ReferenceSketch::collect_and_save_streaming(
             &references,

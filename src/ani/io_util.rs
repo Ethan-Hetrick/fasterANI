@@ -2,7 +2,7 @@
 
 use std::{
     env, fs, io,
-    io::{BufReader, BufWriter, Read, Write},
+    io::{BufReader, BufWriter, Cursor, Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -58,17 +58,59 @@ pub(crate) fn is_gzip_path(path: &Path) -> bool {
     path_has_extension(path, "gz") || path_has_extension(path, "bgz")
 }
 
+pub(crate) fn is_stdin_path(path: &str) -> bool {
+    path == "-" || path == "/dev/stdin"
+}
+
+/// A FASTA input: an on-disk path, or `-` / `/dev/stdin` for a streamed reader.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FastaInput {
+    pub(crate) open: String,
+    pub(crate) label: String,
+}
+
+impl FastaInput {
+    pub(crate) fn from_path(path: String) -> Self {
+        Self {
+            label: path.clone(),
+            open: path,
+        }
+    }
+
+    pub(crate) fn from_stdin(label: Option<String>) -> Self {
+        Self {
+            open: "-".to_string(),
+            label: label.unwrap_or_else(|| "-".to_string()),
+        }
+    }
+}
+
+fn buf_reader_maybe_gzip(mut reader: impl Read + 'static) -> io::Result<Box<dyn io::BufRead>> {
+    let mut header: [u8; 2] = [0; 2];
+    let header_len: usize = reader.read(&mut header)?;
+    let chained: Box<dyn Read> = Box::new(Cursor::new(header[..header_len].to_vec()).chain(reader));
+    if header_len >= 2 && header[0] == 0x1f && header[1] == 0x8b {
+        Ok(Box::new(BufReader::new(MultiGzDecoder::new(chained))))
+    } else {
+        Ok(Box::new(BufReader::new(chained)))
+    }
+}
+
 pub(crate) fn gzp_error_to_io(error: gzp::GzpError) -> io::Error {
     io::Error::other(format!("failed to finish BGZF compression: {error}"))
 }
 
 pub(crate) fn open_fasta_reader(path: &str) -> io::Result<fasta::io::Reader<Box<dyn io::BufRead>>> {
-    let path_ref: &Path = Path::new(path);
-    let file: fs::File = fs::File::open(path_ref)?;
-    let reader: Box<dyn io::BufRead> = if is_gzip_path(path_ref) {
-        Box::new(BufReader::new(MultiGzDecoder::new(file)))
+    let reader: Box<dyn io::BufRead> = if is_stdin_path(path) {
+        buf_reader_maybe_gzip(io::stdin().lock())?
     } else {
-        Box::new(BufReader::new(file))
+        let path_ref: &Path = Path::new(path);
+        let file: fs::File = fs::File::open(path_ref)?;
+        if is_gzip_path(path_ref) {
+            Box::new(BufReader::new(MultiGzDecoder::new(file)))
+        } else {
+            Box::new(BufReader::new(file))
+        }
     };
 
     fasta::io::reader::Builder.build_from_reader(reader)

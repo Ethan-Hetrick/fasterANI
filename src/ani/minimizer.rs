@@ -474,8 +474,8 @@ mod tests {
         estimate_reference_minimizer_windows, estimate_selected_minimizers_from_windows,
         expected_minimizer_window_count, fastani_compatible_fragment_mode,
         mapped_length_from_fragment_ranges, query_fragment_ranges, repeated_acgt,
-        select_seed_minimizers, split_sequence_ranges, usable_minimizer_window_count, MinimizerKey,
-        MinimizerObservation, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
+        select_seed_minimizers, split_sequence_ranges, usable_minimizer_window_count, FastaInput,
+        MinimizerKey, MinimizerObservation, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
         DEFAULT_MIN_FRAGMENT_LENGTH,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
@@ -489,10 +489,9 @@ mod tests {
         ));
         fs::write(&path, b">seq\nAAAAAANNNNAAAAAA\n")?;
 
-        let unsplit_estimate: usize =
-            estimate_reference_minimizer_windows(path.to_str().expect("utf8 temp path"), 3, 3, 0)?;
-        let split_estimate: usize =
-            estimate_reference_minimizer_windows(path.to_str().expect("utf8 temp path"), 3, 3, 4)?;
+        let reference = FastaInput::from_path(path.to_str().expect("utf8 temp path").to_string());
+        let unsplit_estimate: usize = estimate_reference_minimizer_windows(&reference, 3, 3, 0)?;
+        let split_estimate: usize = estimate_reference_minimizer_windows(&reference, 3, 3, 4)?;
         fs::remove_file(&path)?;
 
         assert_eq!(unsplit_estimate, 12);

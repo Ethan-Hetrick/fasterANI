@@ -3,9 +3,9 @@
 use std::{env, fs, io, path::PathBuf};
 
 use crate::ani::{
-    default_shard_minimizers_for_runtime, validate_fragment_length, validate_kmer_size,
-    validate_mash_confidence, validate_min_identity, validate_shard_minimizers,
-    validate_shard_size, validate_window_size, IndexBuildMode, DEFAULT_FRAGMENT_LENGTH,
+    default_shard_minimizers_for_runtime, is_stdin_path, validate_fragment_length,
+    validate_kmer_size, validate_mash_confidence, validate_min_identity, validate_shard_minimizers,
+    validate_shard_size, validate_window_size, FastaInput, IndexBuildMode, DEFAULT_FRAGMENT_LENGTH,
     DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE,
     DEFAULT_MASH_CONFIDENCE, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
     DEFAULT_SHARD_SIZE, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
@@ -13,8 +13,8 @@ use crate::ani::{
 
 /// Parsed command-line arguments.
 pub(crate) struct CliArgs {
-    pub(crate) references: Vec<String>,
-    pub(crate) queries: Vec<String>,
+    pub(crate) references: Vec<FastaInput>,
+    pub(crate) queries: Vec<FastaInput>,
     pub(crate) sketch_path: Option<PathBuf>,
     pub(crate) tmp_dir: Option<PathBuf>,
     pub(crate) out_path: Option<PathBuf>,
@@ -45,10 +45,14 @@ fn usage() -> &'static str {
 (--query <query.fa> | --query-list <queries.txt>)... [options]
 
 Inputs:
-  --reference <path>            Reference FASTA (repeatable).
+  --reference <path>            Reference FASTA (repeatable). Use `-` to read one
+                                  reference from stdin (optionally gzip-compressed).
   --reference-list <path>       File of reference FASTA paths, one per line.
-  --query <path>                Query FASTA (repeatable).
+  --reference-name <label>      Display/path label for a stdin reference (with `--reference -`).
+  --query <path>                Query FASTA (repeatable). Use `-` to read one query from
+                                  stdin (optionally gzip-compressed).
   --query-list <path>           File of query FASTA paths, one per line.
+  --query-name <label>          Display/path label for a stdin query (with `--query -`).
 
 Output:
   --out <path>                  Write results TSV here (default: stdout).
@@ -116,8 +120,10 @@ fn read_path_list(path: &str) -> io::Result<Vec<String>> {
 
 /// Parse command-line arguments.
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
-    let mut references: Vec<String> = Vec::new();
-    let mut queries: Vec<String> = Vec::new();
+    let mut references: Vec<FastaInput> = Vec::new();
+    let mut queries: Vec<FastaInput> = Vec::new();
+    let mut stdin_reference_name: Option<String> = None;
+    let mut stdin_query_name: Option<String> = None;
     let mut sketch_path: Option<PathBuf> = None;
     let mut tmp_dir: Option<PathBuf> = None;
     let mut out_path: Option<PathBuf> = None;
@@ -150,7 +156,32 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--reference requires a path")
                 })?;
-                references.push(value);
+                if is_stdin_path(&value) {
+                    references.push(FastaInput::from_stdin(None));
+                } else {
+                    if stdin_reference_name.is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--reference-name may only be used with `--reference -`",
+                        ));
+                    }
+                    references.push(FastaInput::from_path(value));
+                }
+            }
+            "--reference-name" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--reference-name requires a value",
+                    )
+                })?;
+                if stdin_reference_name.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--reference-name may only be supplied once",
+                    ));
+                }
+                stdin_reference_name = Some(value);
             }
             "--reference-list" => {
                 let value = args.next().ok_or_else(|| {
@@ -159,19 +190,49 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--reference-list requires a path",
                     )
                 })?;
-                references.extend(read_path_list(&value)?);
+                references.extend(
+                    read_path_list(&value)?
+                        .into_iter()
+                        .map(FastaInput::from_path),
+                );
             }
             "--query" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query requires a path")
                 })?;
-                queries.push(value);
+                if is_stdin_path(&value) {
+                    queries.push(FastaInput::from_stdin(None));
+                } else {
+                    if stdin_query_name.is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--query-name may only be used with `--query -`",
+                        ));
+                    }
+                    queries.push(FastaInput::from_path(value));
+                }
+            }
+            "--query-name" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--query-name requires a value")
+                })?;
+                if stdin_query_name.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--query-name may only be supplied once",
+                    ));
+                }
+                stdin_query_name = Some(value);
             }
             "--query-list" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query-list requires a path")
                 })?;
-                queries.extend(read_path_list(&value)?);
+                queries.extend(
+                    read_path_list(&value)?
+                        .into_iter()
+                        .map(FastaInput::from_path),
+                );
             }
             "--sketch" => {
                 let value = args.next().ok_or_else(|| {
@@ -465,6 +526,57 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("missing --query\n{}", usage()),
+        ));
+    }
+
+    if stdin_reference_name.is_some() {
+        let label: String = stdin_reference_name.take().expect("checked above");
+        let Some(reference) = references
+            .iter_mut()
+            .find(|reference| is_stdin_path(&reference.open))
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--reference-name requires `--reference -`",
+            ));
+        };
+        reference.label = label;
+    }
+    if stdin_query_name.is_some() {
+        let label: String = stdin_query_name.take().expect("checked above");
+        let Some(query) = queries.iter_mut().find(|query| is_stdin_path(&query.open)) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--query-name requires `--query -`",
+            ));
+        };
+        query.label = label;
+    }
+
+    let stdin_reference_count: usize = references
+        .iter()
+        .filter(|reference| is_stdin_path(&reference.open))
+        .count();
+    let stdin_query_count: usize = queries
+        .iter()
+        .filter(|query| is_stdin_path(&query.open))
+        .count();
+    if stdin_reference_count > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only one `--reference -` may be supplied per run",
+        ));
+    }
+    if stdin_query_count > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only one `--query -` may be supplied per run",
+        ));
+    }
+    if stdin_reference_count > 0 && stdin_query_count > 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "reference and query cannot both be read from stdin in one run",
         ));
     }
 

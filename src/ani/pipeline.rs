@@ -427,7 +427,8 @@ pub fn run() -> io::Result<()> {
         None => None,
     };
 
-    for (query_index, query_path) in args.queries.iter().enumerate() {
+    for (query_index, query) in args.queries.iter().enumerate() {
+        let query_path: &str = query.label.as_str();
         if progress_enabled {
             emit_progress(
                 "query",
@@ -442,7 +443,7 @@ pub fn run() -> io::Result<()> {
 
         let query_start: Instant = Instant::now();
         let mut reader_query: fasta::io::Reader<Box<dyn io::BufRead>> =
-            open_fasta_reader(query_path)?;
+            open_fasta_reader(&query.open)?;
         let query_file: QueryFile = match QueryFile::collect(
             &mut reader_query,
             args.kmer_size,

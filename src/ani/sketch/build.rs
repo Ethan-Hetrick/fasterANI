@@ -6,9 +6,9 @@ use std::{io, time::Instant};
 
 use crate::ani::{
     canonical_minimizers_with_positions, check_memory_limit, emit_progress,
-    mapped_length_from_fragment_ranges, open_fasta_reader, split_sequence_ranges, ReferenceContig,
-    ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap, ReferenceIndex,
-    ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
+    mapped_length_from_fragment_ranges, open_fasta_reader, split_sequence_ranges, FastaInput,
+    ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
+    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
     REFERENCE_PROGRESS_INTERVAL,
 };
 #[cfg(debug_assertions)]
@@ -63,7 +63,7 @@ impl ReferenceSketch {
 
     /// Build a reference sketch from all provided reference FASTA files.
     pub(crate) fn collect(
-        reference_paths: &[String],
+        references: &[FastaInput],
         params: SketchParams,
         runtime_options: RuntimeOptions,
     ) -> io::Result<Self> {
@@ -81,24 +81,24 @@ impl ReferenceSketch {
         let mut total_reference_minimizers: usize = 0usize;
         let mut total_seed_hits: usize = 0usize;
         let mut contig_names: Vec<ReferenceContigName> = Vec::new();
-        files.reserve(reference_paths.len());
-        contigs.reserve(reference_paths.len());
+        files.reserve(references.len());
+        contigs.reserve(references.len());
 
         if runtime_options.progress_enabled {
             emit_progress(
                 "reference_build",
                 &format!(
                     "event=start\tfiles_total={}\tsplit_n_run={split_n_run}",
-                    reference_paths.len()
+                    references.len()
                 ),
                 build_start,
             );
         }
         check_memory_limit("reference build start", runtime_options)?;
 
-        for (file_id, reference_path) in reference_paths.iter().enumerate() {
+        for (file_id, reference) in references.iter().enumerate() {
             let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
-                open_fasta_reader(reference_path)?;
+                open_fasta_reader(&reference.open)?;
             let mut mapped_length: u64 = 0u64;
 
             for result in reader.records() {
@@ -106,7 +106,8 @@ impl ReferenceSketch {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "failed to read FASTA record from reference {reference_path}: {err}"
+                            "failed to read FASTA record from reference {}: {err}",
+                            reference.label
                         ),
                     )
                 })?;
@@ -178,14 +179,14 @@ impl ReferenceSketch {
             }
 
             files.push(ReferenceFile {
-                path: reference_path.clone(),
+                path: reference.label.clone(),
                 mapped_length,
             });
 
             let files_done: usize = file_id + 1;
             if runtime_options.progress_enabled
                 && (files_done.is_multiple_of(REFERENCE_PROGRESS_INTERVAL)
-                    || files_done == reference_paths.len())
+                    || files_done == references.len())
             {
                 #[cfg(debug_assertions)]
                 let estimated_struct_bytes: usize = reference_build_struct_bytes(
@@ -196,7 +197,7 @@ impl ReferenceSketch {
                 #[cfg(debug_assertions)]
                 let progress_message: String = format!(
                     "event=files\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={total_reference_minimizers}\tunique_minimizers={}\tseed_hits={total_seed_hits}\testimated_struct_mib={:.3}",
-                    reference_paths.len(),
+                    references.len(),
                     contigs.len(),
                     index.len(),
                     memory_mib(estimated_struct_bytes)
@@ -204,7 +205,7 @@ impl ReferenceSketch {
                 #[cfg(not(debug_assertions))]
                 let progress_message: String = format!(
                     "event=files\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={total_reference_minimizers}\tunique_minimizers={}\tseed_hits={total_seed_hits}",
-                    reference_paths.len(),
+                    references.len(),
                     contigs.len(),
                     index.len()
                 );
@@ -213,7 +214,7 @@ impl ReferenceSketch {
             check_memory_limit(
                 &format!(
                     "reference build after {files_done}/{} files",
-                    reference_paths.len()
+                    references.len()
                 ),
                 runtime_options,
             )?;
@@ -224,7 +225,7 @@ impl ReferenceSketch {
                 "reference_build",
                 &format!(
                     "event=complete\tfiles_done={}\tcontigs={}\treference_minimizers={total_reference_minimizers}\tunique_minimizers={}\tseed_hits={total_seed_hits}",
-                    reference_paths.len(),
+                    references.len(),
                     contigs.len(),
                     index.len()
                 ),

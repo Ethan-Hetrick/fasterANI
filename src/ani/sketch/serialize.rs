@@ -11,7 +11,7 @@ use gzp::{deflate::Bgzf, ZBuilder};
 
 use crate::ani::{
     append_path_suffix, compress_file_to_bgzf, gzp_error_to_io, is_gzip_path, read_text_maybe_gzip,
-    ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
+    FastaInput, ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
 };
 
 pub(crate) struct SketchOutput {
@@ -145,13 +145,19 @@ pub(crate) fn legacy_sketch_path(prefix: &Path) -> Option<PathBuf> {
     None
 }
 
-pub(crate) fn reference_list_checksum(reference_paths: &[String]) -> u64 {
+pub(crate) fn reference_list_checksum(references: &[FastaInput]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 
     let mut hash: u64 = FNV_OFFSET;
-    for path in reference_paths {
-        for byte in path.as_bytes().iter().copied().chain(std::iter::once(0)) {
+    for reference in references {
+        for byte in reference
+            .label
+            .as_bytes()
+            .iter()
+            .copied()
+            .chain(std::iter::once(0))
+        {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(FNV_PRIME);
         }

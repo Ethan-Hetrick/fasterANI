@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use crate::ani::{
     check_memory_limit, emit_progress, expected_minimizer_window_count, open_fasta_reader,
     slice_as_bytes, split_sequence_ranges, validate_shard_minimizers, validate_shard_size,
-    MinimizerKey, RuntimeOptions, ScratchFile, SeedHit, ShardManifest, ShardPlan,
+    FastaInput, MinimizerKey, RuntimeOptions, ScratchFile, SeedHit, ShardManifest, ShardPlan,
     DEFAULT_PARTITION_TARGET_BYTES, ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER,
     MAX_PARTITION_COUNT, MIN_PARTITION_COUNT, PARTITIONED_INDEX_MINIMIZER_THRESHOLD,
     REFERENCE_PROGRESS_INTERVAL, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE, SKETCH_VERSION,
@@ -174,19 +174,22 @@ pub(crate) fn partition_id_for_key(key: MinimizerKey, partition_count: usize) ->
 }
 
 pub(crate) fn estimate_reference_minimizer_windows(
-    reference_path: &str,
+    reference: &FastaInput,
     kmer_size: usize,
     window_size: usize,
     split_n_run: usize,
 ) -> io::Result<usize> {
-    let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> = open_fasta_reader(reference_path)?;
+    let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> = open_fasta_reader(&reference.open)?;
     let mut minimizer_window_count: usize = 0usize;
 
     for result in reader.records() {
         let record: fasta::Record = result.map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("failed to read FASTA record from reference {reference_path}: {err}"),
+                format!(
+                    "failed to read FASTA record from reference {}: {err}",
+                    reference.label
+                ),
             )
         })?;
         let sequence: &fasta::record::Sequence = record.sequence();
@@ -262,7 +265,7 @@ pub(crate) fn plan_shards_from_minimizer_counts(
 }
 
 pub(crate) fn plan_shards_by_minimizers(
-    reference_paths: &[String],
+    references: &[FastaInput],
     kmer_size: usize,
     window_size: usize,
     split_n_run: usize,
@@ -275,14 +278,14 @@ pub(crate) fn plan_shards_by_minimizers(
     validate_shard_minimizers(shard_minimizers)?;
 
     let plan_start: Instant = Instant::now();
-    let planner_threads: usize = threads.max(1).min(reference_paths.len().max(1));
+    let planner_threads: usize = threads.max(1).min(references.len().max(1));
 
     if runtime_options.progress_enabled {
         emit_progress(
             "shard_plan",
             &format!(
                 "event=start\testimator=window-count\treferences={}\tshard_size={shard_size}\tshard_minimizers={shard_minimizers}\tthreads={threads}\tplanner_parallelism={planner_threads}",
-                reference_paths.len(),
+                references.len(),
             ),
             plan_start,
         );
@@ -299,12 +302,12 @@ pub(crate) fn plan_shards_by_minimizers(
             )
         })?;
     let count_results: Vec<io::Result<(usize, usize)>> = pool.install(|| {
-        reference_paths
+        references
             .par_iter()
             .enumerate()
-            .map(|(reference_index, reference_path)| {
+            .map(|(reference_index, reference)| {
                 let reference_minimizer_windows: usize = estimate_reference_minimizer_windows(
-                    reference_path,
+                    reference,
                     kmer_size,
                     window_size,
                     split_n_run,
@@ -318,13 +321,13 @@ pub(crate) fn plan_shards_by_minimizers(
                     completed_references.fetch_add(1, AtomicOrdering::Relaxed) + 1;
                 if runtime_options.progress_enabled
                     && (references_done.is_multiple_of(REFERENCE_PROGRESS_INTERVAL)
-                        || references_done == reference_paths.len())
+                        || references_done == references.len())
                 {
                     emit_progress(
                         "shard_plan",
                         &format!(
                             "event=references\treferences_done={references_done}\treferences_total={}\tplanner_parallelism={planner_threads}",
-                            reference_paths.len(),
+                            references.len(),
                         ),
                         plan_start,
                     );
@@ -336,7 +339,7 @@ pub(crate) fn plan_shards_by_minimizers(
             .collect()
     });
 
-    let mut minimizer_counts: Vec<usize> = vec![0usize; reference_paths.len()];
+    let mut minimizer_counts: Vec<usize> = vec![0usize; references.len()];
     for result in count_results {
         let (reference_index, reference_minimizers): (usize, usize) = result?;
         minimizer_counts[reference_index] = reference_minimizers;

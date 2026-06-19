@@ -17,7 +17,7 @@ use crate::ani::{
     estimate_partitioned_shard_memory_bytes, legacy_sketch_path, manifest_path, memory_mib,
     plan_shards_by_minimizers, reference_list_checksum, shard_entry_path, shard_filename,
     shard_manifest_compatibility_error, shard_path, unix_timestamp_seconds,
-    validate_shard_minimizers, validate_shard_size, IndexBuildMode, ReferenceSketch,
+    validate_shard_minimizers, validate_shard_size, FastaInput, IndexBuildMode, ReferenceSketch,
     RuntimeOptions, ShardBuildResult, ShardManifest, ShardManifestEntry, ShardPlan,
     ShardedBuildOptions, SketchBuildStats, SketchParams, SKETCH_DATABASE_SCHEMA_VERSION,
     SKETCH_KEY_MODE, SKETCH_VERSION,
@@ -34,7 +34,7 @@ pub(crate) enum SketchDatabase {
 
 impl SketchDatabase {
     pub(crate) fn collect_or_load(
-        reference_paths: &[String],
+        references: &[FastaInput],
         params: SketchParams,
         sketch_prefix: Option<&Path>,
         shard_opts: ShardedBuildOptions<'_>,
@@ -49,7 +49,7 @@ impl SketchDatabase {
         } = shard_opts;
         let Some(prefix) = sketch_prefix else {
             return Ok(Self::Single(ReferenceSketch::collect(
-                reference_paths,
+                references,
                 params,
                 runtime_options,
             )?));
@@ -78,7 +78,7 @@ impl SketchDatabase {
         }
 
         let manifest: ShardManifest =
-            Self::build_sharded(reference_paths, params, prefix, shard_opts, runtime_options)?;
+            Self::build_sharded(references, params, prefix, shard_opts, runtime_options)?;
 
         Ok(Self::Sharded {
             prefix: prefix.to_path_buf(),
@@ -87,7 +87,7 @@ impl SketchDatabase {
     }
 
     pub(crate) fn build_sharded(
-        reference_paths: &[String],
+        references: &[FastaInput],
         params: SketchParams,
         prefix: &Path,
         shard_opts: ShardedBuildOptions<'_>,
@@ -124,7 +124,7 @@ impl SketchDatabase {
                 &format!(
                     "event=start\tmode=sharded\tprefix={}\treferences={}\tshard_size={shard_size}\tshard_minimizers={shard_minimizers}\tthreads={}",
                     prefix.display(),
-                    reference_paths.len(),
+                    references.len(),
                     threads
                 ),
                 build_start,
@@ -132,7 +132,7 @@ impl SketchDatabase {
         }
 
         let shard_plans: Vec<ShardPlan> = plan_shards_by_minimizers(
-            reference_paths,
+            references,
             kmer_size,
             window_size,
             split_n_run,
@@ -186,7 +186,7 @@ impl SketchDatabase {
                                 "shard reference range overflow",
                             )
                         })?;
-                    let reference_chunk: &[String] = &reference_paths[first_reference..shard_end];
+                    let reference_chunk: &[FastaInput] = &references[first_reference..shard_end];
                     let shard_path: PathBuf = shard_path(prefix, shard_index, bgzip);
 
                     if runtime_options.progress_enabled {
@@ -232,7 +232,7 @@ impl SketchDatabase {
                                 "event=shard_complete\tshard={shard_index}\tshards_done={shards_done}\tshards_total={}\treferences_done={}\treferences_total={}\tcontigs={}\treference_minimizers={}",
                                 shard_plans.len(),
                                 first_reference + stats.reference_count,
-                                reference_paths.len(),
+                                references.len(),
                                 stats.reference_contig_count,
                                 stats.reference_minimizer_count
                             ),
@@ -285,14 +285,14 @@ impl SketchDatabase {
             dust_enabled: false,
             shard_size,
             shard_minimizers,
-            total_references: reference_paths.len(),
+            total_references: references.len(),
             total_reference_contigs,
             total_mapped_reference_length,
             total_reference_minimizers,
             total_shard_unique_minimizers,
             build_unix_seconds: unix_timestamp_seconds()?,
             build_args: env::args().collect(),
-            reference_list_checksum: reference_list_checksum(reference_paths),
+            reference_list_checksum: reference_list_checksum(references),
             shards,
         };
 
