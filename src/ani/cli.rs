@@ -20,6 +20,7 @@ pub(crate) struct CliArgs {
     pub(crate) out_path: Option<PathBuf>,
     pub(crate) mapping_stats_path: Option<PathBuf>,
     pub(crate) bgzip: bool,
+    pub(crate) emit_header: bool,
     pub(crate) verbose: bool,
     pub(crate) threads: usize,
     pub(crate) freq_threshold_percent: f64,
@@ -31,7 +32,7 @@ pub(crate) struct CliArgs {
     pub(crate) min_fragment_length: u32,
     pub(crate) min_identity: f64,
     pub(crate) mash_confidence: f64,
-    pub(crate) disable_reciprocal: bool,
+    /// Minimum run-length of ambiguous `N` bases that splits a contig; `0` disables.
     pub(crate) split_n_run: usize,
     pub(crate) max_memory_bytes: Option<u64>,
     pub(crate) shard_size: usize,
@@ -40,7 +41,67 @@ pub(crate) struct CliArgs {
 }
 
 fn usage() -> &'static str {
-    "usage: fasterANI (--reference <reference.fa> | --reference-list <refs.txt>)... (--query <query.fa> | --query-list <queries.txt>)... [--sketch <prefix>] [--bgzip] [--kmer-size <n, default 16>] [--window-size <n, default 24>] [--fragment-length <bp, default 3000>] [--fragment-stride <bp, default fragment-length>] [--min-fraglen <bp, default fragment-length>] [--min-fragment-length <bp, default fragment-length>] [--min-identity <percent, default 80>] [--mash-confidence <0..1, default 0.9>] [--disable-reciprocal] [--shard-size <n, default 10000>] [--shard-minimizers <n, default memory-aware>] [--index-build-mode auto|hash|partitioned] [--tmp <dir>] [--out <output.tsv>] [--mapping-stats <output.tsv>] [--threads <n>] [--max-memory-gb <gb>] [--freq-threshold-percent <0..100>] [--minmer-count <n>] [--split-N <bp>] [--verbose]"
+    "usage: fasterANI (--reference <ref.fa> | --reference-list <refs.txt>)... \
+(--query <query.fa> | --query-list <queries.txt>)... [options]
+
+Inputs:
+  --reference <path>            Reference FASTA (repeatable).
+  --reference-list <path>       File of reference FASTA paths, one per line.
+  --query <path>                Query FASTA (repeatable).
+  --query-list <path>           File of query FASTA paths, one per line.
+
+Output:
+  --out <path>                  Write results TSV here (default: stdout).
+  --header                      Prepend a column-name header row to the results TSV
+                                  (default: off, for FastANI/script compatibility).
+  --mapping-stats <path>        Write a per-fragment mapping-stats TSV (always headered).
+  --verbose                     Print PROGRESS/diagnostics to stderr (default: off).
+
+  Results columns (tab-separated):
+    query_file  reference_file  ani  shared_fragment_equivalents  total_fragment_equivalents
+  where ANI is a percent, and the last two are fractional fragment counts
+  (aligned bases / fragment-length), so they may be non-integer.
+
+Seeding (minimizer sketch; applies to both references and queries):
+  --kmer-size <n>               K-mer size for minimizers (default 16).
+  --window-size <n>             Minimizer window size (default 24).
+  --minmer-count <n>            Keep only the n smallest-hash minimizers ('minmers')
+                                  per query fragment (default: keep all).
+  --freq-threshold-percent <p>  Ignore reference minimizers occurring in more than p%
+                                  of reference positions; 0..100, 0 disables (default 0).
+
+Fragmenting (how each query contig is cut into fragments):
+  --fragment-length <bp>        Query fragment length (default 3000).
+  --fragment-stride <bp>        Step between fragment starts; <= fragment-length
+                                  (default: equal to fragment-length, i.e. non-overlapping).
+  --min-fragment-length <bp>    Keep trailing fragments at least this long
+                                  (alias: --min-fraglen; default: fragment-length).
+  --split-N <bp>                Split contigs at runs of >= this many ambiguous (N)
+                                  bases; 0 disables splitting (alias: --split-n; default 0).
+
+Fragment mapping (thresholds applied to each individual fragment alignment):
+  --min-identity <percent>      Minimum identity of a single query-fragment-to-reference
+                                  alignment for that fragment to count toward ANI;
+                                  0..100 (default 80). (Not a threshold on the final ANI.)
+  --mash-confidence <fraction>  Confidence level for the Mash-distance prefilter that
+                                  selects which reference regions each fragment is scored
+                                  against; higher = stricter; 0..1 (default 0.9).
+
+  Per genome pair, fasterANI keeps only reciprocal-best fragment mappings and reports
+  ANI as the length-weighted mean of those retained fragments' identities.
+
+Sketch database / sharding:
+  --sketch <prefix>             Build/reuse an on-disk reference sketch at this prefix.
+  --bgzip                       Treat sketch sidecar inputs as bgzip-compressed.
+  --shard-size <n>              References per shard (count; default 10000).
+  --shard-minimizers <n>        Minimizer budget per shard (count; default: memory-aware).
+  --index-build-mode <mode>     auto | hash | partitioned (default auto).
+
+Resources:
+  --threads <n>                 Worker threads, >= 1 (default 1).
+  --max-memory-gb <gb>          Soft memory ceiling in GB (default: unlimited).
+  --tmp <dir>                   Directory for temporary shard files.
+  -h, --help                    Show this help."
 }
 
 fn read_path_list(path: &str) -> io::Result<Vec<String>> {
@@ -62,6 +123,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut out_path: Option<PathBuf> = None;
     let mut mapping_stats_path: Option<PathBuf> = None;
     let mut bgzip: bool = false;
+    let mut emit_header: bool = false;
     let mut verbose: bool = false;
     let mut threads: usize = 1usize;
     let mut freq_threshold_percent: f64 = DEFAULT_FREQ_THRESHOLD_PERCENT;
@@ -75,7 +137,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut min_fragment_length_was_set: bool = false;
     let mut min_identity: f64 = DEFAULT_MIN_PERCENT_IDENTITY;
     let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
-    let mut disable_reciprocal: bool = false;
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
     let mut max_memory_bytes: Option<u64> = None;
     let mut shard_size: usize = DEFAULT_SHARD_SIZE;
@@ -120,6 +181,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             }
             "--bgzip" => {
                 bgzip = true;
+            }
+            "--header" => {
+                emit_header = true;
             }
             "--kmer-size" => {
                 let value = args.next().ok_or_else(|| {
@@ -192,9 +256,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     )
                 })?;
                 validate_mash_confidence(mash_confidence)?;
-            }
-            "--disable-reciprocal" => {
-                disable_reciprocal = true;
             }
             "--shard-size" => {
                 let value = args.next().ok_or_else(|| {
@@ -363,14 +424,17 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     ));
                 }
             }
-            "--split-N" => {
+            "--split-N" | "--split-n" => {
                 let value = args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--split-N requires a value")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} requires a value"),
+                    )
                 })?;
                 split_n_run = value.parse::<usize>().map_err(|err| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("invalid --split-N value {value:?}: {err}"),
+                        format!("invalid {arg} value {value:?}: {err}"),
                     )
                 })?;
             }
@@ -440,6 +504,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         out_path,
         mapping_stats_path,
         bgzip,
+        emit_header,
         verbose,
         threads,
         freq_threshold_percent,
@@ -451,7 +516,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         min_fragment_length,
         min_identity,
         mash_confidence,
-        disable_reciprocal,
         split_n_run,
         max_memory_bytes,
         shard_size,

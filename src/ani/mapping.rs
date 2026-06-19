@@ -381,7 +381,6 @@ pub(crate) fn final_ani_computation(
     mut mapping_results: Vec<MappingResult>,
     reference_file_count: usize,
     fragment_length: u32,
-    disable_reciprocal: bool,
 ) -> AniComputation {
     mapping_results.sort_by(compare_query_bucket);
 
@@ -400,30 +399,25 @@ pub(crate) fn final_ani_computation(
         query_best_mappings.push(mapping);
     }
 
-    let summary_mappings: Vec<MappingResult> = if disable_reciprocal {
-        query_best_mappings
-    } else {
-        query_best_mappings
-            .sort_by(|left, right| compare_refbin_bucket(left, right, fragment_length));
+    // Keep only reciprocal-best mappings: collapse query fragments that land in the
+    // same reference position bin so each reference region is counted once.
+    query_best_mappings.sort_by(|left, right| compare_refbin_bucket(left, right, fragment_length));
 
-        let mut reciprocal_best_mappings: Vec<MappingResult> = Vec::new();
+    let mut summary_mappings: Vec<MappingResult> = Vec::new();
 
-        for mapping in query_best_mappings {
-            if let Some(previous) = reciprocal_best_mappings.last_mut() {
-                if previous.reference_contig_id == mapping.reference_contig_id
-                    && reference_position_bin(previous.reference_start, fragment_length)
-                        == reference_position_bin(mapping.reference_start, fragment_length)
-                {
-                    *previous = mapping;
-                    continue;
-                }
+    for mapping in query_best_mappings {
+        if let Some(previous) = summary_mappings.last_mut() {
+            if previous.reference_contig_id == mapping.reference_contig_id
+                && reference_position_bin(previous.reference_start, fragment_length)
+                    == reference_position_bin(mapping.reference_start, fragment_length)
+            {
+                *previous = mapping;
+                continue;
             }
-
-            reciprocal_best_mappings.push(mapping);
         }
 
-        reciprocal_best_mappings
-    };
+        summary_mappings.push(mapping);
+    }
 
     let mut summaries: Vec<AniSummary> = (0..reference_file_count)
         .map(|_| AniSummary::default())

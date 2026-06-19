@@ -102,6 +102,16 @@ fn collect_query_mappings(
     })
 }
 
+fn write_results_header(output: &mut dyn Write) -> io::Result<()> {
+    // shared_/total_fragment_equivalents are fractional fragment counts
+    // (aligned bases / fragment-length), matching FastANI's column layout, so
+    // they are not necessarily whole numbers despite the `.2` formatting.
+    writeln!(
+        output,
+        "query_file\treference_file\tani\tshared_fragment_equivalents\ttotal_fragment_equivalents"
+    )
+}
+
 fn write_mapping_stats_header(output: &mut dyn Write) -> io::Result<()> {
     // Coordinates are 0-based half-open so the start/end columns can be used as BED intervals.
     writeln!(
@@ -198,18 +208,13 @@ fn write_query_outputs(
     output: &mut dyn Write,
     mapping_stats_output: Option<&mut (dyn Write + '_)>,
     fragment_length: u32,
-    disable_reciprocal: bool,
 ) -> io::Result<(std::time::Duration, usize)> {
     let summary_start: Instant = Instant::now();
     let mapping_results_for_stats: Option<Vec<MappingResult>> = mapping_stats_output
         .as_ref()
         .map(|_| mapping_results.clone());
-    let ani_computation: AniComputation = final_ani_computation(
-        mapping_results,
-        reference_files.len(),
-        fragment_length,
-        disable_reciprocal,
-    );
+    let ani_computation: AniComputation =
+        final_ani_computation(mapping_results, reference_files.len(), fragment_length);
     let summary_elapsed: std::time::Duration = summary_start.elapsed();
 
     if let (Some(stats_results), Some(stats_output)) =
@@ -235,6 +240,9 @@ fn write_query_outputs(
         }
 
         let ani: f64 = summary.weighted_identity_sum / summary.shared_bases as f64;
+        // Columns 4/5 are "fragment equivalents": aligned (and total) bases expressed
+        // in units of fragment-length, mirroring FastANI's matched/total fragment
+        // counts. They are ratios, so they can be fractional even though printed `.2`.
         let shared_fragment_equivalents: f64 = summary.shared_bases as f64 / fragment_length as f64;
         let total_fragment_equivalents: f64 = query_mapped_length as f64 / fragment_length as f64;
         writeln!(
@@ -279,7 +287,6 @@ fn map_query_against_reference_sketch(
         output,
         mapping_stats_output,
         args.fragment_length,
-        args.disable_reciprocal,
     )?;
 
     Ok(QueryMappingStats {
@@ -322,7 +329,7 @@ pub fn run() -> io::Result<()> {
         emit_progress(
             "parameters",
             &format!(
-                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmin_identity={:.6}\tmash_confidence={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}\tdisable_reciprocal={}",
+                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmin_identity={:.6}\tmash_confidence={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
                 args.kmer_size,
                 args.window_size,
                 args.fragment_length,
@@ -335,7 +342,6 @@ pub fn run() -> io::Result<()> {
                     .unwrap_or_else(|| "disabled".to_owned()),
                 args.freq_threshold_percent,
                 args.split_n_run,
-                args.disable_reciprocal
             ),
             total_start,
         );
@@ -409,6 +415,9 @@ pub fn run() -> io::Result<()> {
         Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         None => Box::new(BufWriter::new(io::stdout())),
     };
+    if args.emit_header {
+        write_results_header(&mut *output)?;
+    }
     let mut mapping_stats_output: Option<Box<dyn Write>> = match &args.mapping_stats_path {
         Some(path) => {
             let mut writer: Box<dyn Write> = Box::new(BufWriter::new(fs::File::create(path)?));
@@ -667,7 +676,6 @@ pub fn run() -> io::Result<()> {
                     &mut *output,
                     mapping_stats_output.as_deref_mut(),
                     args.fragment_length,
-                    args.disable_reciprocal,
                 )?;
                 summary_elapsed += query_summary_elapsed;
                 emitted_pairs += query_emitted_pairs;
