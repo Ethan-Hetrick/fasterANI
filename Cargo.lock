@@ -265,6 +265,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simd-minimizers",
+ "thiserror",
 ]
 
 [[package]]

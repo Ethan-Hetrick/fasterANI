@@ -1,0 +1,478 @@
+//! Command-line argument parsing and the `--help` text.
+
+use std::{env, fs, io, path::PathBuf};
+
+use crate::ani::{
+    default_shard_minimizers_for_runtime, validate_fragment_length, validate_kmer_size,
+    validate_mash_confidence, validate_min_identity, validate_shard_minimizers,
+    validate_shard_size, validate_window_size, IndexBuildMode, DEFAULT_FRAGMENT_LENGTH,
+    DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE,
+    DEFAULT_MASH_CONFIDENCE, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
+    DEFAULT_SHARD_SIZE, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+};
+
+/// Parsed command-line arguments.
+pub(crate) struct CliArgs {
+    pub(crate) references: Vec<String>,
+    pub(crate) queries: Vec<String>,
+    pub(crate) sketch_path: Option<PathBuf>,
+    pub(crate) tmp_dir: Option<PathBuf>,
+    pub(crate) out_path: Option<PathBuf>,
+    pub(crate) mapping_stats_path: Option<PathBuf>,
+    pub(crate) bgzip: bool,
+    pub(crate) verbose: bool,
+    pub(crate) threads: usize,
+    pub(crate) freq_threshold_percent: f64,
+    pub(crate) minmer_count: Option<usize>,
+    pub(crate) kmer_size: usize,
+    pub(crate) window_size: usize,
+    pub(crate) fragment_length: u32,
+    pub(crate) fragment_stride: u32,
+    pub(crate) min_fragment_length: u32,
+    pub(crate) min_identity: f64,
+    pub(crate) mash_confidence: f64,
+    pub(crate) disable_reciprocal: bool,
+    pub(crate) split_n_run: usize,
+    pub(crate) max_memory_bytes: Option<u64>,
+    pub(crate) shard_size: usize,
+    pub(crate) shard_minimizers: usize,
+    pub(crate) index_build_mode: IndexBuildMode,
+}
+
+fn usage() -> &'static str {
+    "usage: fasterANI (--reference <reference.fa> | --reference-list <refs.txt>)... (--query <query.fa> | --query-list <queries.txt>)... [--sketch <prefix>] [--bgzip] [--kmer-size <n, default 16>] [--window-size <n, default 24>] [--fragment-length <bp, default 3000>] [--fragment-stride <bp, default fragment-length>] [--min-fraglen <bp, default fragment-length>] [--min-fragment-length <bp, default fragment-length>] [--min-identity <percent, default 80>] [--mash-confidence <0..1, default 0.9>] [--disable-reciprocal] [--shard-size <n, default 10000>] [--shard-minimizers <n, default memory-aware>] [--index-build-mode auto|hash|partitioned] [--tmp <dir>] [--out <output.tsv>] [--mapping-stats <output.tsv>] [--threads <n>] [--max-memory-gb <gb>] [--freq-threshold-percent <0..100>] [--minmer-count <n>] [--split-N <bp>] [--verbose]"
+}
+
+fn read_path_list(path: &str) -> io::Result<Vec<String>> {
+    let contents: String = fs::read_to_string(path)?;
+    Ok(contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+/// Parse command-line arguments.
+pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
+    let mut references: Vec<String> = Vec::new();
+    let mut queries: Vec<String> = Vec::new();
+    let mut sketch_path: Option<PathBuf> = None;
+    let mut tmp_dir: Option<PathBuf> = None;
+    let mut out_path: Option<PathBuf> = None;
+    let mut mapping_stats_path: Option<PathBuf> = None;
+    let mut bgzip: bool = false;
+    let mut verbose: bool = false;
+    let mut threads: usize = 1usize;
+    let mut freq_threshold_percent: f64 = DEFAULT_FREQ_THRESHOLD_PERCENT;
+    let mut minmer_count: Option<usize> = None;
+    let mut kmer_size: usize = DEFAULT_KMER_SIZE;
+    let mut window_size: usize = DEFAULT_WINDOW_SIZE;
+    let mut fragment_length: u32 = DEFAULT_FRAGMENT_LENGTH;
+    let mut fragment_stride: u32 = DEFAULT_FRAGMENT_STRIDE;
+    let mut fragment_stride_was_set: bool = false;
+    let mut min_fragment_length: u32 = DEFAULT_MIN_FRAGMENT_LENGTH;
+    let mut min_fragment_length_was_set: bool = false;
+    let mut min_identity: f64 = DEFAULT_MIN_PERCENT_IDENTITY;
+    let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
+    let mut disable_reciprocal: bool = false;
+    let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
+    let mut max_memory_bytes: Option<u64> = None;
+    let mut shard_size: usize = DEFAULT_SHARD_SIZE;
+    let mut shard_minimizers: Option<usize> = None;
+    let mut index_build_mode: IndexBuildMode = IndexBuildMode::Auto;
+    let mut args: std::iter::Skip<std::env::Args> = env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--reference" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--reference requires a path")
+                })?;
+                references.push(value);
+            }
+            "--reference-list" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--reference-list requires a path",
+                    )
+                })?;
+                references.extend(read_path_list(&value)?);
+            }
+            "--query" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--query requires a path")
+                })?;
+                queries.push(value);
+            }
+            "--query-list" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--query-list requires a path")
+                })?;
+                queries.extend(read_path_list(&value)?);
+            }
+            "--sketch" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--sketch requires a path")
+                })?;
+                sketch_path = Some(PathBuf::from(value));
+            }
+            "--bgzip" => {
+                bgzip = true;
+            }
+            "--kmer-size" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--kmer-size requires a value")
+                })?;
+                kmer_size = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --kmer-size value {value:?}: {err}"),
+                    )
+                })?;
+                validate_kmer_size(kmer_size)?;
+            }
+            "--window-size" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--window-size requires a value",
+                    )
+                })?;
+                window_size = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --window-size value {value:?}: {err}"),
+                    )
+                })?;
+                validate_window_size(window_size)?;
+            }
+            "--fragment-length" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--fragment-length requires a value",
+                    )
+                })?;
+                fragment_length = value.parse::<u32>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --fragment-length value {value:?}: {err}"),
+                    )
+                })?;
+                validate_fragment_length(fragment_length)?;
+            }
+            "--min-identity" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--min-identity requires a value",
+                    )
+                })?;
+                min_identity = value.parse::<f64>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --min-identity value {value:?}: {err}"),
+                    )
+                })?;
+                validate_min_identity(min_identity)?;
+            }
+            "--mash-confidence" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--mash-confidence requires a value",
+                    )
+                })?;
+                mash_confidence = value.parse::<f64>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --mash-confidence value {value:?}: {err}"),
+                    )
+                })?;
+                validate_mash_confidence(mash_confidence)?;
+            }
+            "--disable-reciprocal" => {
+                disable_reciprocal = true;
+            }
+            "--shard-size" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--shard-size requires a value")
+                })?;
+                shard_size = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --shard-size value {value:?}: {err}"),
+                    )
+                })?;
+                validate_shard_size(shard_size)?;
+            }
+            "--shard-minimizers" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--shard-minimizers requires a value",
+                    )
+                })?;
+                let parsed_shard_minimizers: usize = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --shard-minimizers value {value:?}: {err}"),
+                    )
+                })?;
+                validate_shard_minimizers(parsed_shard_minimizers)?;
+                shard_minimizers = Some(parsed_shard_minimizers);
+            }
+            "--tmp" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--tmp requires a directory")
+                })?;
+                tmp_dir = Some(PathBuf::from(value));
+            }
+            "--index-build-mode" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--index-build-mode requires a value",
+                    )
+                })?;
+                index_build_mode = IndexBuildMode::parse(&value)?;
+            }
+            "--out" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--out requires a path")
+                })?;
+                out_path = Some(PathBuf::from(value));
+            }
+            "--mapping-stats" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--mapping-stats requires a path",
+                    )
+                })?;
+                mapping_stats_path = Some(PathBuf::from(value));
+            }
+            "--threads" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--threads requires a value")
+                })?;
+                threads = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --threads value {value:?}: {err}"),
+                    )
+                })?;
+                if threads == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--threads must be at least 1",
+                    ));
+                }
+            }
+            "--max-memory-gb" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--max-memory-gb requires a value",
+                    )
+                })?;
+                max_memory_bytes = Some(parse_max_memory_gb(&value)?);
+            }
+            "--freq-threshold-percent" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--freq-threshold-percent requires a value",
+                    )
+                })?;
+                freq_threshold_percent = value.parse::<f64>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --freq-threshold-percent value {value:?}: {err}"),
+                    )
+                })?;
+                if !(0.0..=100.0).contains(&freq_threshold_percent) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--freq-threshold-percent must be between 0 and 100",
+                    ));
+                }
+            }
+            "--minmer-count" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--minmer-count requires a value",
+                    )
+                })?;
+                let parsed_count: usize = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --minmer-count value {value:?}: {err}"),
+                    )
+                })?;
+                if parsed_count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--minmer-count must be at least 1",
+                    ));
+                }
+                minmer_count = Some(parsed_count);
+            }
+            "--fragment-stride" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--fragment-stride requires a value",
+                    )
+                })?;
+                fragment_stride = value.parse::<u32>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --fragment-stride value {value:?}: {err}"),
+                    )
+                })?;
+                fragment_stride_was_set = true;
+                if fragment_stride == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--fragment-stride must be at least 1",
+                    ));
+                }
+            }
+            "--min-fraglen" | "--min-fragment-length" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} requires a value"),
+                    )
+                })?;
+                min_fragment_length = value.parse::<u32>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid {arg} value {value:?}: {err}"),
+                    )
+                })?;
+                min_fragment_length_was_set = true;
+                if min_fragment_length == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} must be at least 1"),
+                    ));
+                }
+            }
+            "--split-N" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--split-N requires a value")
+                })?;
+                split_n_run = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --split-N value {value:?}: {err}"),
+                    )
+                })?;
+            }
+            "--verbose" => {
+                verbose = true;
+            }
+            "--help" | "-h" => {
+                eprintln!("{}", usage());
+                return Ok(None);
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument {arg:?}\n{}", usage()),
+                ));
+            }
+        }
+    }
+
+    if references.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("missing --reference\n{}", usage()),
+        ));
+    }
+
+    if queries.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("missing --query\n{}", usage()),
+        ));
+    }
+
+    if !fragment_stride_was_set {
+        fragment_stride = fragment_length;
+    }
+    if !min_fragment_length_was_set {
+        min_fragment_length = fragment_length;
+    }
+    validate_kmer_size(kmer_size)?;
+    validate_window_size(window_size)?;
+    validate_fragment_length(fragment_length)?;
+    validate_min_identity(min_identity)?;
+    validate_mash_confidence(mash_confidence)?;
+    if fragment_stride > fragment_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--fragment-stride must be <= --fragment-length ({fragment_length})"),
+        ));
+    }
+    if min_fragment_length > fragment_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--min-fraglen must be <= --fragment-length ({fragment_length})"),
+        ));
+    }
+
+    let shard_minimizers: usize = shard_minimizers
+        .unwrap_or_else(|| default_shard_minimizers_for_runtime(threads, max_memory_bytes));
+    validate_shard_minimizers(shard_minimizers)?;
+
+    Ok(Some(CliArgs {
+        references,
+        queries,
+        sketch_path,
+        tmp_dir,
+        out_path,
+        mapping_stats_path,
+        bgzip,
+        verbose,
+        threads,
+        freq_threshold_percent,
+        minmer_count,
+        kmer_size,
+        window_size,
+        fragment_length,
+        fragment_stride,
+        min_fragment_length,
+        min_identity,
+        mash_confidence,
+        disable_reciprocal,
+        split_n_run,
+        max_memory_bytes,
+        shard_size,
+        shard_minimizers,
+        index_build_mode,
+    }))
+}
+
+fn parse_max_memory_gb(value: &str) -> io::Result<u64> {
+    let gb: f64 = value.parse::<f64>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid --max-memory-gb value {value:?}: {err}"),
+        )
+    })?;
+    if !gb.is_finite() || gb <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--max-memory-gb must be a positive finite number",
+        ));
+    }
+
+    Ok((gb * 1024.0 * 1024.0 * 1024.0) as u64)
+}

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Minimal pre-commit hook: keep commits formatted, lint-clean, and tested.
+# Enable once with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+cargo fmt --all -- --check
+cargo clippy --all-targets
+cargo test
