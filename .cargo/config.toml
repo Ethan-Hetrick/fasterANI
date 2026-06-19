@@ -1,0 +1,13 @@
+# Build flags applied to every cargo invocation in this project.
+#
+# fasterANI depends on `ensure_simd`, which HARD-ERRORS on release builds unless
+# AVX2 (x86_64) / NEON (aarch64) is enabled. Setting target-cpu=native here means
+# `cargo build --release` "just works" without anyone having to remember
+# RUSTFLAGS="-C target-cpu=native" on the command line.
+#
+# Trade-off: binaries built this way are tuned for the building machine's CPU and
+# are NOT portable to older/different CPUs. That is fine for building-and-running
+# locally or in CI. If you ever distribute prebuilt binaries, override this (e.g.
+# `RUSTFLAGS="-C target-cpu=x86-64-v2"`) or enable the dependency's `scalar` feature.
+[build]
+rustflags = ["-C", "target-cpu=native"]
