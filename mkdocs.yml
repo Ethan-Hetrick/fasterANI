@@ -1,6 +1,14 @@
 site_name: fasterANI Documentation
 
+theme:
+  name: readthedocs
+  highlightjs: true
+  hljs_languages:
+    - yaml
+    - rust
+
 nav:
   - Home: index.md
+  - Introduction: introduction.md
   - User Guide:
     - Installation: installation.md

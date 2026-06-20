@@ -1,4 +1,6 @@
-fasterANI: A reimplementation of FastANI in Rust, with better performance and optimized search modes.
+# Installation
+
+
 
 ```bash
 # Build
