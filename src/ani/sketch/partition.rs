@@ -80,6 +80,7 @@ pub(crate) struct PartitionGroupResult {
     pub(crate) grouped_key_scratch: ScratchFile,
     pub(crate) hit_payload_scratch: ScratchFile,
     pub(crate) keys: Vec<MinimizerKey>,
+    pub(crate) key_count: usize,
     pub(crate) hit_count: usize,
 }
 

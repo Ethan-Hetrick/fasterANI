@@ -1,4 +1,5 @@
 target/
+scripts/
 
 # Profiling artifacts
 flamegraph*.svg
@@ -6,3 +7,4 @@ dhat-heap.json
 
 # Local-only agent guidance, not shared with the repo
 AGENTS.md
+benchmarks/

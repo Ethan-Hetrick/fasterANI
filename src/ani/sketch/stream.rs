@@ -564,9 +564,10 @@ impl ReferenceSketch {
         )?;
         let mut grouped_key_writer: BufWriter<fs::File> = BufWriter::new(grouped_key_file);
         let mut hit_payload_writer: BufWriter<fs::File> = BufWriter::new(hit_payload_file);
-        let mut keys: Vec<MinimizerKey> = Vec::new();
+        let mut keys: Vec<MinimizerKey> = Vec::with_capacity(records.len());
         let mut local_hit_count: usize = 0usize;
-        let mut hit_buffer: Vec<SeedHit> = Vec::with_capacity(1_048_576);
+        let mut hit_buffer: Vec<SeedHit> =
+            Vec::with_capacity(records.len().min(1_048_576));
 
         let mut group_start: usize = 0usize;
         while group_start < records.len() {
@@ -645,6 +646,7 @@ impl ReferenceSketch {
             partition_index,
             grouped_key_scratch,
             hit_payload_scratch,
+            key_count: keys.len(),
             keys,
             hit_count: local_hit_count,
         })
@@ -747,15 +749,16 @@ impl ReferenceSketch {
 
         let total_unique_minimizers: usize = partition_results
             .iter()
-            .map(|result| result.keys.len())
+            .map(|result| result.key_count)
             .sum();
         let mut keys: Vec<MinimizerKey> = Vec::with_capacity(total_unique_minimizers);
         let mut total_hits: usize = 0usize;
-        for result in &partition_results {
+        for result in &mut partition_results {
             keys.extend_from_slice(&result.keys);
             total_hits = total_hits.checked_add(result.hit_count).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "total hit count overflow")
             })?;
+            result.keys.clear();
         }
 
         if runtime_options.progress_enabled {
@@ -773,13 +776,14 @@ impl ReferenceSketch {
             runtime_options,
         )?;
 
+        let key_count: usize = keys.len();
         let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
+        drop(keys);
         if runtime_options.progress_enabled {
             emit_progress(
                 "sketch_save",
                 &format!(
-                    "event=mphf_built\tmode=streaming\tindex_build_mode=partitioned\tkey_count={}",
-                    keys.len()
+                    "event=mphf_built\tmode=streaming\tindex_build_mode=partitioned\tkey_count={key_count}",
                 ),
                 save_start,
             );
@@ -789,23 +793,25 @@ impl ReferenceSketch {
             runtime_options,
         )?;
 
-        let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
-        let mut hit_offsets: Vec<u64> = vec![0u64; keys.len()];
-        let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];
+        let mut slot_keys: Vec<MinimizerKey> = vec![0; key_count];
+        let mut hit_offsets: Vec<u64> = vec![0u64; key_count];
+        let mut hit_counts: Vec<u32> = vec![0u32; key_count];
+        const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
+        let mut grouped_chunk: Vec<GroupedKeyRecord> =
+            Vec::with_capacity(GROUPED_KEY_PACK_CHUNK);
         let mut grouped_records_done: usize = 0usize;
         let mut partition_hit_offset: u64 = 0u64;
         for result in &partition_results {
             let mut grouped_key_reader: BufReader<fs::File> =
                 BufReader::new(fs::File::open(&result.grouped_key_scratch.path)?);
             let mut partition_records_done: usize = 0usize;
-            while partition_records_done < result.keys.len() {
+            while partition_records_done < result.key_count {
                 let records_to_read: usize =
-                    (result.keys.len() - partition_records_done).min(1_000_000);
-                let mut grouped_records: Vec<GroupedKeyRecord> =
-                    vec![GroupedKeyRecord::default(); records_to_read];
-                grouped_key_reader.read_exact(slice_as_bytes_mut(&mut grouped_records))?;
+                    (result.key_count - partition_records_done).min(GROUPED_KEY_PACK_CHUNK);
+                grouped_chunk.resize(records_to_read, GroupedKeyRecord::default());
+                grouped_key_reader.read_exact(slice_as_bytes_mut(&mut grouped_chunk))?;
 
-                for grouped_record in grouped_records {
+                for grouped_record in &grouped_chunk {
                     let slot: usize = mphf.hash(&grouped_record.key) as usize;
                     slot_keys[slot] = grouped_record.key;
                     hit_offsets[slot] = partition_hit_offset
@@ -820,13 +826,12 @@ impl ReferenceSketch {
                 grouped_records_done += records_to_read;
                 if runtime_options.progress_enabled
                     && (grouped_records_done.is_multiple_of(SKETCH_KEY_PACK_PROGRESS_INTERVAL)
-                        || grouped_records_done == keys.len())
+                        || grouped_records_done == key_count)
                 {
                     emit_progress(
                         "sketch_save",
                         &format!(
-                            "event=pack_index\tmode=streaming\tindex_build_mode=partitioned\tkeys_done={grouped_records_done}\tkey_count={}",
-                            keys.len()
+                            "event=pack_index\tmode=streaming\tindex_build_mode=partitioned\tkeys_done={grouped_records_done}\tkey_count={key_count}",
                         ),
                         save_start,
                     );
@@ -997,7 +1002,7 @@ impl ReferenceSketch {
         }
         check_memory_limit("partitioned sketch save complete", runtime_options)?;
 
-        Ok(keys.len())
+        Ok(key_count)
     }
 }
 

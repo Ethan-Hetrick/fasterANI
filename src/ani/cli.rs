@@ -42,7 +42,7 @@ pub(crate) struct CliArgs {
 
 fn usage() -> &'static str {
     "usage: fasterANI (--reference <ref.fa> | --reference-list <refs.txt>)... \
-(--query <query.fa> | --query-list <queries.txt>)... [options]
+[(--query <query.fa> | --query-list <queries.txt>)...] [options]
 
 Inputs:
   --reference <path>            Reference FASTA (repeatable). Use `-` to read one
@@ -96,6 +96,7 @@ Fragment mapping (thresholds applied to each individual fragment alignment):
 
 Sketch database / sharding:
   --sketch <prefix>             Build/reuse an on-disk reference sketch at this prefix.
+                                  Query inputs optional (build-only when omitted).
   --bgzip                       Treat sketch sidecar inputs as bgzip-compressed.
   --shard-size <n>              References per shard (count; default 10000).
   --shard-minimizers <n>        Minimizer budget per shard (count; default: memory-aware).
@@ -522,10 +523,13 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         ));
     }
 
-    if queries.is_empty() {
+    if queries.is_empty() && sketch_path.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("missing --query\n{}", usage()),
+            format!(
+                "missing --query (omit queries when using --sketch for build-only mode)\n{}",
+                usage()
+            ),
         ));
     }
 
