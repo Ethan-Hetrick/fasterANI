@@ -35,6 +35,7 @@ pub(crate) fn checked_section_end(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn sketch_reference_name(path: &str) -> String {
     Path::new(path)
         .file_name()

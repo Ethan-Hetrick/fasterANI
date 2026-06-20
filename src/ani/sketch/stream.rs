@@ -566,8 +566,7 @@ impl ReferenceSketch {
         let mut hit_payload_writer: BufWriter<fs::File> = BufWriter::new(hit_payload_file);
         let mut keys: Vec<MinimizerKey> = Vec::with_capacity(records.len());
         let mut local_hit_count: usize = 0usize;
-        let mut hit_buffer: Vec<SeedHit> =
-            Vec::with_capacity(records.len().min(1_048_576));
+        let mut hit_buffer: Vec<SeedHit> = Vec::with_capacity(records.len().min(1_048_576));
 
         let mut group_start: usize = 0usize;
         while group_start < records.len() {
@@ -797,8 +796,7 @@ impl ReferenceSketch {
         let mut hit_offsets: Vec<u64> = vec![0u64; key_count];
         let mut hit_counts: Vec<u32> = vec![0u32; key_count];
         const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
-        let mut grouped_chunk: Vec<GroupedKeyRecord> =
-            Vec::with_capacity(GROUPED_KEY_PACK_CHUNK);
+        let mut grouped_chunk: Vec<GroupedKeyRecord> = Vec::with_capacity(GROUPED_KEY_PACK_CHUNK);
         let mut grouped_records_done: usize = 0usize;
         let mut partition_hit_offset: u64 = 0u64;
         for result in &partition_results {
