@@ -1,0 +1,6 @@
+site_name: fasterANI Documentation
+
+nav:
+  - Home: index.md
+  - User Guide:
+    - Installation: installation.md
