@@ -12,3 +12,5 @@ nav:
   - Introduction: introduction.md
   - User Guide:
     - Installation: installation.md
+  - Developer Guide:
+    - Source File Layout: source_layout.md
