@@ -25,6 +25,7 @@ use boomphf::Mphf;
 impl ReferenceSketch {
     /// Save the in-memory reference index as a zero-copy-loadable sketch cache.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn save(
         &self,
         path: &Path,
@@ -592,6 +593,7 @@ impl ReferenceSketch {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn save_streamed_cache(
         path: &Path,
         params: SketchParams,

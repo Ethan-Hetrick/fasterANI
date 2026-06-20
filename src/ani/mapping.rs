@@ -25,6 +25,7 @@ pub(crate) fn lower_bound_minimizer_position(
 
 impl QueryFile {
     /// Read a query FASTA file and split each contig into query fragments.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect(
         reader: &mut fasta::io::Reader<impl io::BufRead>,
         kmer_size: usize,
@@ -144,6 +145,7 @@ impl QueryFile {
 }
 
 /// Map all query fragments to the reference sketch on one thread.
+#[allow(clippy::too_many_arguments)]
 fn map_query_to_reference(
     reference_sketch: &ReferenceSketch,
     query_file: &QueryFile,
@@ -182,6 +184,7 @@ fn map_query_to_reference(
 }
 
 /// Map all query fragments to the reference sketch using a local Rayon thread pool.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn map_query_to_reference_parallel(
     reference_sketch: &ReferenceSketch,
     query_file: &QueryFile,
@@ -284,6 +287,7 @@ fn record_candidate_discovery_metrics(
 }
 
 /// Map one query fragment, appending all reportAll-style surviving mappings.
+#[allow(clippy::too_many_arguments)]
 fn map_query_fragment_into(
     reference_sketch: &ReferenceSketch,
     query_fragment: &QueryFragment,

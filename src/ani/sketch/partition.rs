@@ -265,6 +265,7 @@ pub(crate) fn plan_shards_from_minimizer_counts(
     Ok(plans)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_shards_by_minimizers(
     references: &[FastaInput],
     kmer_size: usize,

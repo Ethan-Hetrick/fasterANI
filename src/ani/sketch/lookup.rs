@@ -8,6 +8,7 @@ use crate::ani::{
 
 impl ReferenceSketch {
     /// Collect and merge seed-hit candidate intervals for one query fragment.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn find_candidate_regions(
         &self,
         query_minimizers: &[MinimizerKey],
@@ -81,6 +82,7 @@ impl ReferenceSketch {
 
     /// Score one candidate region with FastANI-style sliding-window minimizer overlap.
     #[cfg_attr(not(debug_assertions), allow(unused_mut, unused_variables))]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn score_candidate_region(
         &self,
         query_fragment: &QueryFragment,

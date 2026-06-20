@@ -28,6 +28,7 @@ use crate::ani::{
 
 impl ReferenceSketch {
     /// Build a reference sketch cache while streaming contig minimizers through scratch files.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect_and_save_streaming(
         references: &[FastaInput],
         params: SketchParams,

@@ -62,6 +62,7 @@ struct ShardQueryResult {
     pub(crate) metrics: MappingMetrics,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_query_mappings(
     reference_sketch: &ReferenceSketch,
     query_file: &QueryFile,
@@ -199,6 +200,7 @@ fn write_mapping_stats(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_query_outputs(
     reference_files: &[ReferenceFile],
     reference_contig_names: Option<&[ReferenceContigName]>,
@@ -256,6 +258,7 @@ fn write_query_outputs(
     Ok((summary_elapsed, emitted_pairs))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn map_query_against_reference_sketch(
     reference_sketch: &ReferenceSketch,
     query_file: &QueryFile,
