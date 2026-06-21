@@ -14,7 +14,7 @@ code they cover in `#[cfg(test)] mod tests` blocks; end-to-end CLI tests live in
 
 src/
 
-  [lib.rs](http://lib.rs)              library crate root (pub mod ani; pub use ani::run)
+  [lib.rs](http://lib.rs)              library crate root; a fast, FastANI-style average nucleotide identity estimator.
 
   [main.rs](http://main.rs)             binary entry point (faster_ani::run())
 
@@ -30,21 +30,21 @@ src/
 
       [reference.rs](http://reference.rs)    reference data types, manifests, ReferenceIndex, param structs
 
-      [query.rs](http://query.rs)        query/mapping data types
+      [query.rs](http://query.rs)        query-side data types: fragments, mapping results, and ANI summaries.
 
     [runtime.rs](http://runtime.rs)        RuntimeOptions, memory/RSS helpers, progress
 
-    [minimizer.rs](http://minimizer.rs)      sliding sketch, Fenwick, canonical minimizers, fragmenting
+    [minimizer.rs](http://minimizer.rs)      canonical minimizer extraction, sliding-window sketches, and query fragmentation.
 
-    [mash.rs](http://mash.rs)           mash-distance + shared-minimizer estimates
+    [mash.rs](http://mash.rs)           mash-distance math and shared-minimizer lower-bound estimates.
 
-    [metrics.rs](http://metrics.rs)        MappingMetrics (debug/release variants), histograms
+    [metrics.rs](http://metrics.rs)        optional hot-path mapping metrics (debug builds) and seed-hit histograms.
 
     io_[util.rs](http://util.rs)        path/gzip helpers, byte slicing, ScratchFile
 
     [mmap.rs](http://mmap.rs)           MmapFile + mmap-backed reference views
 
-    [validation.rs](http://validation.rs)     validate_*/default_* parameter helpers
+    [validation.rs](http://validation.rs)     validation and default-value helpers for CLI and runtime parameters.
 
     sketch/
 
@@ -62,7 +62,7 @@ src/
 
       [database.rs](http://database.rs)     SketchDatabase orchestration (collect/load/sharded build)
 
-    [mapping.rs](http://mapping.rs)        seed-hit mapping engine + ANI computation
+    [mapping.rs](http://mapping.rs)        seed-hit candidate discovery and sliding-window ANI scoring per query/reference pair.
 
     [cli.rs](http://cli.rs)            CliArgs + argument parsing
 

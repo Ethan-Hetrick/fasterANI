@@ -303,11 +303,10 @@ pub(crate) fn plan_shards_by_minimizers(
                 format!("failed to initialize shard planning thread pool: {err}"),
             )
         })?;
-    let count_results: Vec<io::Result<(usize, usize)>> = pool.install(|| {
+    let minimizer_counts: Vec<usize> = pool.install(|| {
         references
             .par_iter()
-            .enumerate()
-            .map(|(reference_index, reference)| {
+            .map(|reference| {
                 let reference_minimizer_windows: usize = estimate_reference_minimizer_windows(
                     reference,
                     kmer_size,
@@ -336,16 +335,10 @@ pub(crate) fn plan_shards_by_minimizers(
                 }
                 check_memory_limit("during shard planning", runtime_options)?;
 
-                Ok((reference_index, reference_minimizers))
+                Ok(reference_minimizers)
             })
-            .collect()
-    });
-
-    let mut minimizer_counts: Vec<usize> = vec![0usize; references.len()];
-    for result in count_results {
-        let (reference_index, reference_minimizers): (usize, usize) = result?;
-        minimizer_counts[reference_index] = reference_minimizers;
-    }
+            .collect::<io::Result<Vec<usize>>>()
+    })?;
 
     let plans: Vec<ShardPlan> =
         plan_shards_from_minimizer_counts(&minimizer_counts, shard_size, shard_minimizers)?;
