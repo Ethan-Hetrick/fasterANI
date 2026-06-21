@@ -191,6 +191,7 @@ pub(crate) struct ShardPlan {
 }
 
 #[cfg(debug_assertions)]
+#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct ReferenceMemoryEstimate {
     pub(crate) reference_minimizers: usize,
