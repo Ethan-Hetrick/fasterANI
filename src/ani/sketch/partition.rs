@@ -5,6 +5,7 @@ use std::{
     io::{BufWriter, Write},
     mem::size_of,
     path::Path,
+    str::FromStr,
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
     time::Instant,
 };
@@ -37,8 +38,12 @@ impl IndexBuildMode {
             Self::Partitioned => "partitioned",
         }
     }
+}
 
-    pub(crate) fn parse(value: &str) -> io::Result<Self> {
+impl FromStr for IndexBuildMode {
+    type Err = io::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "auto" => Ok(Self::Auto),
             "hash" => Ok(Self::Hash),
@@ -181,7 +186,7 @@ pub(crate) fn estimate_reference_minimizer_windows(
     split_n_run: usize,
 ) -> io::Result<usize> {
     let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> = open_fasta_reader(&reference.open)?;
-    let mut minimizer_window_count: usize = 0usize;
+    let mut minimizer_window_count = 0;
 
     for result in reader.records() {
         let record: fasta::Record = result.map_err(|err| {
@@ -228,13 +233,13 @@ pub(crate) fn plan_shards_from_minimizer_counts(
     validate_shard_size(shard_size)?;
     validate_shard_minimizers(shard_minimizers)?;
 
-    let mut plans: Vec<ShardPlan> = Vec::new();
-    let mut shard_first_reference: usize = 0usize;
-    let mut shard_reference_count: usize = 0usize;
-    let mut shard_estimated_minimizers: usize = 0usize;
-
+    let estimated_shards = ceil_div_usize(minimizer_counts.len(), shard_size);
+    let mut plans = Vec::with_capacity(estimated_shards);
+    let mut shard_first_reference = 0;
+    let mut shard_reference_count = 0;
+    let mut shard_estimated_minimizers: usize = 0;
     for (reference_index, reference_minimizers) in minimizer_counts.iter().copied().enumerate() {
-        let would_exceed_minimizers: bool = shard_reference_count > 0
+        let would_exceed_minimizers = shard_reference_count > 0
             && shard_estimated_minimizers.saturating_add(reference_minimizers) > shard_minimizers;
         let would_exceed_reference_count: bool = shard_reference_count >= shard_size;
 
@@ -280,7 +285,7 @@ pub(crate) fn plan_shards_by_minimizers(
     validate_shard_minimizers(shard_minimizers)?;
 
     let plan_start: Instant = Instant::now();
-    let planner_threads: usize = threads.max(1).min(references.len().max(1));
+    let planner_threads = threads.max(1).min(references.len().max(1));
 
     if runtime_options.progress_enabled {
         emit_progress(
@@ -399,6 +404,7 @@ pub(crate) struct PartitionWriters {
     pub(crate) writers: Vec<BufWriter<fs::File>>,
     pub(crate) buffers: Vec<Vec<PartitionHitRecord>>,
     pub(crate) buffer_record_limit: usize,
+    partition_count: usize,
 }
 
 impl PartitionWriters {
@@ -428,6 +434,7 @@ impl PartitionWriters {
             writers,
             buffers: vec![Vec::new(); partition_count],
             buffer_record_limit: buffer_record_limit.max(1),
+            partition_count,
         })
     }
 
@@ -440,7 +447,7 @@ impl PartitionWriters {
     }
 
     pub(crate) fn push(&mut self, record: PartitionHitRecord) -> io::Result<()> {
-        let partition_index: usize = partition_id_for_key(record.key, self.partition_count());
+        let partition_index: usize = partition_id_for_key(record.key, self.partition_count);
         let buffer: &mut Vec<PartitionHitRecord> = &mut self.buffers[partition_index];
         buffer.push(record);
 

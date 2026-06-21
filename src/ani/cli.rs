@@ -360,7 +360,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--index-build-mode requires a value",
                     )
                 })?;
-                index_build_mode = IndexBuildMode::parse(&value)?;
+                index_build_mode = value.parse::<IndexBuildMode>()?;
             }
             "--out" => {
                 let value = args.next().ok_or_else(|| {
