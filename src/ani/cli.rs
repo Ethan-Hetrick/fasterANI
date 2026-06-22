@@ -45,8 +45,7 @@ fn usage() -> &'static str {
 [(--query <query.fa> | --query-list <queries.txt>)...] [options]
 
 Inputs:
-  --reference <path>            Reference FASTA (repeatable). Use `-` to read one
-                                  reference from stdin (optionally gzip-compressed).
+  --reference <path>            Reference FASTA (optionally gzip-compressed).
   --reference-list <path>       File of reference FASTA paths, one per line.
   --reference-name <label>      Display/path label for a stdin reference (with `--reference -`).
   --query <path>                Query FASTA (repeatable). Use `-` to read one query from
@@ -123,7 +122,6 @@ fn read_path_list(path: &str) -> io::Result<Vec<String>> {
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut references: Vec<FastaInput> = Vec::new();
     let mut queries: Vec<FastaInput> = Vec::new();
-    let mut stdin_reference_name: Option<String> = None;
     let mut stdin_query_name: Option<String> = None;
     let mut sketch_path: Option<PathBuf> = None;
     let mut tmp_dir: Option<PathBuf> = None;
@@ -157,32 +155,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--reference requires a path")
                 })?;
-                if is_stdin_path(&value) {
-                    references.push(FastaInput::from_stdin(None));
-                } else {
-                    if stdin_reference_name.is_some() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--reference-name may only be used with `--reference -`",
-                        ));
-                    }
-                    references.push(FastaInput::from_path(value));
-                }
-            }
-            "--reference-name" => {
-                let value = args.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--reference-name requires a value",
-                    )
-                })?;
-                if stdin_reference_name.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--reference-name may only be supplied once",
-                    ));
-                }
-                stdin_reference_name = Some(value);
+                references.push(FastaInput::from_path(value));
             }
             "--reference-list" => {
                 let value = args.next().ok_or_else(|| {
@@ -533,19 +506,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         ));
     }
 
-    if stdin_reference_name.is_some() {
-        let label: String = stdin_reference_name.take().expect("checked above");
-        let Some(reference) = references
-            .iter_mut()
-            .find(|reference| is_stdin_path(&reference.open))
-        else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--reference-name requires `--reference -`",
-            ));
-        };
-        reference.label = label;
-    }
     if stdin_query_name.is_some() {
         let label: String = stdin_query_name.take().expect("checked above");
         let Some(query) = queries.iter_mut().find(|query| is_stdin_path(&query.open)) else {
