@@ -47,7 +47,8 @@ fn usage() -> &'static str {
 Inputs:
   --reference <path>            Reference FASTA (optionally gzip-compressed).
   --reference-list <path>       File of reference FASTA paths, one per line.
-  --reference-name <label>      Display/path label for a stdin reference (with `--reference -`).
+  --reference-sketch <prefix>   Build/reuse an on-disk reference sketch at this prefix.
+                                Query inputs optional (build-only when omitted).
   --query <path>                Query FASTA (repeatable). Use `-` to read one query from
                                   stdin (optionally gzip-compressed).
   --query-list <path>           File of query FASTA paths, one per line.
@@ -94,8 +95,6 @@ Fragment mapping (thresholds applied to each individual fragment alignment):
   ANI as the length-weighted mean of those retained fragments' identities.
 
 Sketch database / sharding:
-  --sketch <prefix>             Build/reuse an on-disk reference sketch at this prefix.
-                                  Query inputs optional (build-only when omitted).
   --bgzip                       Treat sketch sidecar inputs as bgzip-compressed.
   --shard-size <n>              References per shard (count; default 10000).
   --shard-minimizers <n>        Minimizer budget per shard (count; default: memory-aware).
@@ -208,9 +207,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         .map(FastaInput::from_path),
                 );
             }
-            "--sketch" => {
+            "--reference-sketch" => {
                 let value = args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--sketch requires a path")
+                    io::Error::new(io::ErrorKind::InvalidInput, "--reference-sketch requires a path")
                 })?;
                 sketch_path = Some(PathBuf::from(value));
             }
