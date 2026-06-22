@@ -107,14 +107,29 @@ Resources:
   -h, --help                    Show this help."
 }
 
-fn read_path_list(path: &str) -> io::Result<Vec<String>> {
-    let contents: String = fs::read_to_string(path)?;
-    Ok(contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(ToOwned::to_owned)
-        .collect())
+fn validate_and_read_path_list(list_path: &str) -> io::Result<Vec<String>> {
+    let contents = fs::read_to_string(list_path)?;
+    let mut valid_paths = Vec::new();
+
+    for line in contents.lines() {
+        let path = line.trim();
+        if path.is_empty() || path.starts_with('#') {
+            continue;
+        }
+
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_file() => {
+                valid_paths.push(path.to_owned());
+            }
+            Ok(_) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("Path in list is not a file: {}", path)));
+            }
+            Err(e) => {
+                return Err(io::Error::new(e.kind(), format!("Cannot access path '{}' from list: {}\n{}", path, list_path, e)));
+            }
+        }
+    }
+    Ok(valid_paths)
 }
 
 /// Parse command-line arguments.
@@ -154,6 +169,13 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--reference requires a path")
                 })?;
+
+                match fs::exists(&value) {
+                    Ok(true) => println!(">>> Reference file: {}", value),
+                    Ok(false) => println!("ERROR: Reference file {} does not exist.", value),
+                    Err(e) => println!("ERROR: Error loading reference: {}", e),
+                }
+
                 references.push(FastaInput::from_path(value));
             }
             "--reference-list" => {
@@ -163,8 +185,15 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--reference-list requires a path",
                     )
                 })?;
+                match fs::exists(&value) {
+                    Ok(true) => println!(">>> Reference list: {}", value),
+                    Ok(false) => println!("ERROR: Reference list {} does not exist.", value),
+                    Err(e) => println!("ERROR: Error loading reference list: {}", e),
+                }
+                let validated_paths = validate_and_read_path_list(&value)?;
+
                 references.extend(
-                    read_path_list(&value)?
+                    validated_paths
                         .into_iter()
                         .map(FastaInput::from_path),
                 );
@@ -181,6 +210,11 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                             io::ErrorKind::InvalidInput,
                             "--query-name may only be used with `--query -`",
                         ));
+                    }
+                    match fs::exists(&value) {
+                        Ok(true) => println!(">>> Query file: {}", value),
+                        Ok(false) => println!("ERROR: Query file {} does not exist.", value),
+                        Err(e) => println!("ERROR: Error loading query: {}", e),
                     }
                     queries.push(FastaInput::from_path(value));
                 }
@@ -201,8 +235,21 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query-list requires a path")
                 })?;
+                match fs::exists(&value) {
+                    Ok(true) => println!(">>> Query list: {}", value),
+                    Ok(false) => println!("ERROR: Query list {} does not exist.", value),
+                    Err(e) => println!("ERROR: Error loading query list: {}", e),
+                }
+                match fs::exists(&value) {
+                    Ok(true) => println!(">>> Reference list: {}", value),
+                    Ok(false) => println!("ERROR: Reference list {} does not exist.", value),
+                    Err(e) => println!("ERROR: Error loading reference list: {}", e),
+                }
+
+                let validated_paths = validate_and_read_path_list(&value)?;
+
                 queries.extend(
-                    read_path_list(&value)?
+                    validated_paths
                         .into_iter()
                         .map(FastaInput::from_path),
                 );
