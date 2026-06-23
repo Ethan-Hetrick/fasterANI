@@ -187,6 +187,13 @@ impl MmapFile {
             return Err(io::Error::last_os_error());
         }
 
+        // Disable kernel readahead. Access pattern is random across minimizer
+        // positions; readahead fetches pages that will not be used and evicts
+        // pages that will be needed.
+        unsafe {
+            libc::madvise(ptr, len, libc::MADV_RANDOM);
+        }
+
         Ok(Self {
             ptr: NonNull::new(ptr as *mut u8).expect("mmap returned null"),
             len,

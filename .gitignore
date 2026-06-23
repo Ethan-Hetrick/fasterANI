@@ -1,5 +1,7 @@
 target/
 scripts/
+*.log
+*.txt
 
 # Profiling artifacts
 flamegraph*.svg
