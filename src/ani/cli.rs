@@ -171,9 +171,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
 
                 match fs::exists(&value) {
-                    Ok(true) => println!(">>> Reference file: {}", value),
-                    Ok(false) => println!("ERROR: Reference file {} does not exist.", value),
-                    Err(e) => println!("ERROR: Error loading reference: {}", e),
+                    Ok(true) => eprintln!(">>> Reference file: {}", value),
+                    Ok(false) => eprintln!("ERROR: Reference file {} does not exist.", value),
+                    Err(e) => eprintln!("ERROR: Error loading reference: {}", e),
                 }
 
                 references.push(FastaInput::from_path(value));
@@ -186,9 +186,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     )
                 })?;
                 match fs::exists(&value) {
-                    Ok(true) => println!(">>> Reference list: {}", value),
-                    Ok(false) => println!("ERROR: Reference list {} does not exist.", value),
-                    Err(e) => println!("ERROR: Error loading reference list: {}", e),
+                    Ok(true) => eprintln!(">>> Reference list: {}", value),
+                    Ok(false) => eprintln!("ERROR: Reference list {} does not exist.", value),
+                    Err(e) => eprintln!("ERROR: Error loading reference list: {}", e),
                 }
                 let validated_paths = validate_and_read_path_list(&value)?;
 
@@ -212,9 +212,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         ));
                     }
                     match fs::exists(&value) {
-                        Ok(true) => println!(">>> Query file: {}", value),
-                        Ok(false) => println!("ERROR: Query file {} does not exist.", value),
-                        Err(e) => println!("ERROR: Error loading query: {}", e),
+                        Ok(true) => eprintln!(">>> Query file: {}", value),
+                        Ok(false) => eprintln!("ERROR: Query file {} does not exist.", value),
+                        Err(e) => eprintln!("ERROR: Error loading query: {}", e),
                     }
                     queries.push(FastaInput::from_path(value));
                 }
@@ -236,14 +236,14 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query-list requires a path")
                 })?;
                 match fs::exists(&value) {
-                    Ok(true) => println!(">>> Query list: {}", value),
-                    Ok(false) => println!("ERROR: Query list {} does not exist.", value),
-                    Err(e) => println!("ERROR: Error loading query list: {}", e),
+                    Ok(true) => eprintln!(">>> Query list: {}", value),
+                    Ok(false) => eprintln!("ERROR: Query list {} does not exist.", value),
+                    Err(e) => eprintln!("ERROR: Error loading query list: {}", e),
                 }
                 match fs::exists(&value) {
-                    Ok(true) => println!(">>> Reference list: {}", value),
-                    Ok(false) => println!("ERROR: Reference list {} does not exist.", value),
-                    Err(e) => println!("ERROR: Error loading reference list: {}", e),
+                    Ok(true) => eprintln!(">>> Reference list: {}", value),
+                    Ok(false) => eprintln!("ERROR: Reference list {} does not exist.", value),
+                    Err(e) => eprintln!("ERROR: Error loading reference list: {}", e),
                 }
 
                 let validated_paths = validate_and_read_path_list(&value)?;
