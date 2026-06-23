@@ -542,8 +542,11 @@ pub fn run() -> io::Result<()> {
                         .sum(),
                 );
 
-                let shard_query_parallelism: usize =
-                    args.threads.max(1).min(manifest.shards.len().max(1));
+                let shard_query_parallelism: usize = args
+                    .threads
+                    .max(1)
+                    .min(args.max_concurrent_shards.unwrap_or(4))
+                    .min(manifest.shards.len().max(1));
                 let mapping_threads_per_shard: usize =
                     args.threads.max(1).div_ceil(shard_query_parallelism.max(1));
 

@@ -37,6 +37,7 @@ pub(crate) struct CliArgs {
     pub(crate) max_memory_bytes: Option<u64>,
     pub(crate) shard_size: usize,
     pub(crate) shard_minimizers: usize,
+    pub(crate) max_concurrent_shards: Option<usize>,
     pub(crate) index_build_mode: IndexBuildMode,
 }
 
@@ -98,6 +99,7 @@ Sketch database / sharding:
   --bgzip                       Treat sketch sidecar inputs as bgzip-compressed.
   --shard-size <n>              References per shard (count; default 10000).
   --shard-minimizers <n>        Minimizer budget per shard (count; default: memory-aware).
+  --max-concurrent-shards <n>    Maximum number of shards to query concurrently
   --index-build-mode <mode>     auto | hash | partitioned (default auto).
 
 Resources:
@@ -159,6 +161,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
     let mut max_memory_bytes: Option<u64> = None;
     let mut shard_size: usize = DEFAULT_SHARD_SIZE;
+    let mut max_concurrent_shards: Option<usize> = None;
     let mut shard_minimizers: Option<usize> = None;
     let mut index_build_mode: IndexBuildMode = IndexBuildMode::Auto;
     let mut args: std::iter::Skip<std::env::Args> = env::args().skip(1);
@@ -349,6 +352,27 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     )
                 })?;
                 validate_shard_size(shard_size)?;
+            }
+            "--max-concurrent-shards" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--max-concurrent-shards requires a value",
+                    )
+                })?;
+                let n = value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --max-concurrent-shards value {value:?}: {err}"),
+                    )
+                })?;
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--max-concurrent-shards must be at least 1",
+                    ));
+                }
+                max_concurrent_shards = Some(n);
             }
             "--shard-minimizers" => {
                 let value = args.next().ok_or_else(|| {
@@ -641,6 +665,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         split_n_run,
         max_memory_bytes,
         shard_size,
+        max_concurrent_shards,
         shard_minimizers,
         index_build_mode,
     }))
