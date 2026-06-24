@@ -47,7 +47,7 @@ impl MmapReferenceIndex {
         mmap_slice_at(&self.mmap, self.slot_keys_offset, self.key_count)
     }
 
-    pub(crate) fn hit_offsets(&self) -> &[u64] {
+    pub(crate) fn hit_offsets(&self) -> &[u32] {
         mmap_slice_at(&self.mmap, self.hit_offsets_offset, self.key_count)
     }
 

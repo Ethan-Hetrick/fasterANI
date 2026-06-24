@@ -165,10 +165,10 @@ impl ReferenceSketch {
                     reference_minimizers.sort_unstable_by_key(|minimizer| minimizer.position);
                     index.reserve(reference_minimizers.len());
 
-                    for minimizer in &reference_minimizers {
+                    for (local_idx, minimizer) in reference_minimizers.iter().enumerate() {
                         index.entry(minimizer.hash).or_default().push(SeedHit {
                             reference_contig_id: reference_contig_id as u32,
-                            position: minimizer.position,
+                            minimizer_offset: local_idx as u32,
                         });
                     }
 
@@ -394,12 +394,12 @@ impl ReferenceSketch {
                                 format!("reference contig id exceeds sketch cache limit: {err}"),
                             )
                         })?;
-                    for minimizer in &reference_minimizers {
+                    for (local_idx, minimizer) in reference_minimizers.iter().enumerate() {
                         partition_writers.push(PartitionHitRecord {
                             key: minimizer.hash,
                             hit: SeedHit {
                                 reference_contig_id: reference_contig_id_u32,
-                                position: minimizer.position,
+                                minimizer_offset: local_idx as u32,
                             },
                         })?;
                     }
@@ -548,11 +548,7 @@ impl ReferenceSketch {
     ) -> io::Result<PartitionGroupResult> {
         let mut records: Vec<PartitionHitRecord> = Self::read_partition_records(partition_path)?;
         records.sort_unstable_by_key(|record| {
-            (
-                record.key,
-                record.hit.reference_contig_id,
-                record.hit.position,
-            )
+            (record.key, record.hit.reference_contig_id, record.hit.minimizer_offset)
         });
 
         let (grouped_key_scratch, grouped_key_file): (ScratchFile, fs::File) = ScratchFile::create(
@@ -794,7 +790,7 @@ impl ReferenceSketch {
         )?;
 
         let mut slot_keys: Vec<MinimizerKey> = vec![0; key_count];
-        let mut hit_offsets: Vec<u64> = vec![0u64; key_count];
+        let mut hit_offsets: Vec<u32> = vec![0u32; key_count];
         let mut hit_counts: Vec<u32> = vec![0u32; key_count];
         const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
         let mut grouped_chunk: Vec<GroupedKeyRecord> = Vec::with_capacity(GROUPED_KEY_PACK_CHUNK);
@@ -813,11 +809,20 @@ impl ReferenceSketch {
                 for grouped_record in &grouped_chunk {
                     let slot: usize = mphf.hash(&grouped_record.key) as usize;
                     slot_keys[slot] = grouped_record.key;
-                    hit_offsets[slot] = partition_hit_offset
+                    let global_offset: u64 = partition_hit_offset
                         .checked_add(grouped_record.hit_offset)
                         .ok_or_else(|| {
                             io::Error::new(io::ErrorKind::InvalidData, "global hit offset overflow")
                         })?;
+                    hit_offsets[slot] = u32::try_from(global_offset).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "shard has more than u32::MAX hit-payload entries ({global_offset}); \
+                                 reduce --shard-minimizers below 4 294 967 295"
+                            ),
+                        )
+                    })?;
                     hit_counts[slot] = grouped_record.hit_count;
                 }
 

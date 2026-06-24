@@ -91,7 +91,7 @@ impl ReferenceSketch {
         }
         check_memory_limit("sketch save after building MPH", runtime_options)?;
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
-        let mut hit_offsets: Vec<u64> = vec![0u64; keys.len()];
+        let mut hit_offsets: Vec<u32> = vec![0u32; keys.len()];
         let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];
         let total_hits: usize = index.values().map(Vec::len).sum::<usize>();
         let mut hit_payloads: Vec<SeedHit> = Vec::with_capacity(total_hits);
@@ -142,7 +142,16 @@ impl ReferenceSketch {
         for (key_index, (key, hits)) in index.iter().enumerate() {
             let slot: usize = mphf.hash(key) as usize;
             slot_keys[slot] = *key;
-            hit_offsets[slot] = hit_payloads.len() as u64;
+            hit_offsets[slot] = u32::try_from(hit_payloads.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "shard has more than u32::MAX hit-payload entries ({}); \
+                         reduce --shard-minimizers below 4 294 967 295",
+                        hit_payloads.len()
+                    ),
+                )
+            })?;
             hit_counts[slot] = hits.len() as u32;
             hit_payloads.extend_from_slice(hits);
 
@@ -280,10 +289,10 @@ impl ReferenceSketch {
         let slot_keys_offset: usize = align_up(metadata_end, 8);
         let hit_offsets_offset: usize = align_up(
             checked_section_end(slot_keys_offset, slot_keys.len(), size_of::<MinimizerKey>())?,
-            align_of::<u64>(),
+            align_of::<u32>(),
         );
         let hit_counts_offset: usize =
-            checked_section_end(hit_offsets_offset, hit_offsets.len(), size_of::<u64>())?;
+            checked_section_end(hit_offsets_offset, hit_offsets.len(), size_of::<u32>())?;
         let hit_payloads_offset: usize = align_up(
             checked_section_end(hit_counts_offset, hit_counts.len(), size_of::<u32>())?,
             align_of::<SeedHit>(),
@@ -512,15 +521,11 @@ impl ReferenceSketch {
 
         let slot_keys_offset: usize = align_up(metadata_end, 8);
         let hit_offsets_offset: usize = align_up(
-            checked_section_end(
-                slot_keys_offset,
-                cached.key_count,
-                size_of::<MinimizerKey>(),
-            )?,
-            align_of::<u64>(),
+            checked_section_end(slot_keys_offset, cached.key_count, size_of::<MinimizerKey>())?,
+            align_of::<u32>(),
         );
         let hit_counts_offset: usize =
-            checked_section_end(hit_offsets_offset, cached.key_count, size_of::<u64>())?;
+    checked_section_end(hit_offsets_offset, cached.key_count, size_of::<u32>())?;
         let hit_payloads_offset: usize = align_up(
             checked_section_end(hit_counts_offset, cached.key_count, size_of::<u32>())?,
             align_of::<SeedHit>(),
@@ -640,7 +645,7 @@ impl ReferenceSketch {
         let keys: Vec<MinimizerKey> = index.keys().copied().collect::<Vec<_>>();
         let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
-        let mut hit_offsets: Vec<u64> = vec![0u64; keys.len()];
+        let mut hit_offsets: Vec<u32> = vec![0u32; keys.len()];
         let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];
         let total_hits: usize = index.values().map(Vec::len).sum::<usize>();
         let mut hit_payloads: Vec<SeedHit> = Vec::with_capacity(total_hits);
@@ -663,7 +668,16 @@ impl ReferenceSketch {
         for (key_index, (key, hits)) in index.iter().enumerate() {
             let slot: usize = mphf.hash(key) as usize;
             slot_keys[slot] = *key;
-            hit_offsets[slot] = hit_payloads.len() as u64;
+            hit_offsets[slot] = u32::try_from(hit_payloads.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "shard has more than u32::MAX hit-payload entries ({}); \
+                         reduce --shard-minimizers below 4 294 967 295",
+                        hit_payloads.len()
+                    ),
+                )
+            })?;
             hit_counts[slot] = hits.len() as u32;
             hit_payloads.extend_from_slice(hits);
 
@@ -877,10 +891,10 @@ mod tests {
         ];
         let mut index: ReferenceHitMap = ReferenceHitMap::default();
         for (contig_id, contig) in contigs.iter().enumerate() {
-            for minimizer in &contig.minimizers {
+            for (local_idx, minimizer) in contig.minimizers.iter().enumerate() {
                 index.entry(minimizer.hash).or_default().push(SeedHit {
                     reference_contig_id: contig_id as u32,
-                    position: minimizer.position,
+                    minimizer_offset: local_idx as u32,
                 });
             }
         }

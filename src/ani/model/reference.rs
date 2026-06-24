@@ -80,7 +80,7 @@ pub(crate) struct ReferenceMinimizer {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct SeedHit {
     pub(crate) reference_contig_id: u32,
-    pub(crate) position: u32,
+    pub(crate) minimizer_offset: u32,
 }
 
 /// Fully loaded reference sketch, backed by either an in-memory hash map or an mmap cache.
