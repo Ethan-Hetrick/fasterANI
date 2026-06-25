@@ -372,8 +372,7 @@ pub fn run() -> io::Result<()> {
         ShardedBuildOptions {
             tmp_dir: args.tmp_dir.as_deref(),
             bgzip: args.bgzip,
-            shard_size: args.shard_size,
-            shard_minimizers: args.shard_minimizers,
+            max_shard_minimizers: args.max_shard_minimizers,
             index_build_mode: args.index_build_mode,
             threads: args.threads,
         },

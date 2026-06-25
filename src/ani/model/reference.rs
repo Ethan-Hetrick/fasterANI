@@ -8,7 +8,7 @@ use boomphf::Mphf;
 use serde::{Deserialize, Serialize};
 
 use crate::ani::{
-    default_fragment_length, default_shard_minimizers, IndexBuildMode, MinimizerKey,
+    default_fragment_length, default_max_shard_minimizers, IndexBuildMode, MinimizerKey,
     MmapReferenceContigs, MmapReferenceIndex, ReferenceHitMap,
 };
 
@@ -29,8 +29,7 @@ pub(crate) struct SketchParams {
 pub(crate) struct ShardedBuildOptions<'a> {
     pub(crate) tmp_dir: Option<&'a Path>,
     pub(crate) bgzip: bool,
-    pub(crate) shard_size: usize,
-    pub(crate) shard_minimizers: usize,
+    pub(crate) max_shard_minimizers: usize,
     pub(crate) index_build_mode: IndexBuildMode,
     pub(crate) threads: usize,
 }
@@ -140,9 +139,8 @@ pub(crate) struct ShardManifest {
     pub(crate) split_n_run: usize,
     #[serde(default)]
     pub(crate) dust_enabled: bool,
-    pub(crate) shard_size: usize,
-    #[serde(default = "default_shard_minimizers")]
-    pub(crate) shard_minimizers: usize,
+    #[serde(default = "default_max_shard_minimizers")]
+    pub(crate) max_shard_minimizers: usize,
     pub(crate) total_references: usize,
     pub(crate) total_reference_contigs: usize,
     pub(crate) total_mapped_reference_length: u64,

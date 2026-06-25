@@ -3,12 +3,12 @@
 use std::{env, fs, io, path::PathBuf};
 
 use crate::ani::{
-    default_shard_minimizers_for_runtime, is_stdin_path, validate_fragment_length,
-    validate_kmer_size, validate_mash_confidence, validate_min_identity, validate_shard_minimizers,
-    validate_shard_size, validate_window_size, FastaInput, IndexBuildMode, DEFAULT_FRAGMENT_LENGTH,
-    DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE,
-    DEFAULT_MASH_CONFIDENCE, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
-    DEFAULT_SHARD_SIZE, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    default_max_shard_minimizers_for_runtime, is_stdin_path, validate_fragment_length,
+    validate_kmer_size, validate_mash_confidence, validate_max_shard_minimizers,
+    validate_min_identity, validate_window_size, FastaInput, IndexBuildMode,
+    DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT,
+    DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE, DEFAULT_MIN_FRAGMENT_LENGTH,
+    DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
 };
 
 /// Parsed command-line arguments.
@@ -35,8 +35,7 @@ pub(crate) struct CliArgs {
     /// Minimum run-length of ambiguous `N` bases that splits a contig; `0` disables.
     pub(crate) split_n_run: usize,
     pub(crate) max_memory_bytes: Option<u64>,
-    pub(crate) shard_size: usize,
-    pub(crate) shard_minimizers: usize,
+    pub(crate) max_shard_minimizers: usize,
     pub(crate) max_concurrent_shards: Option<usize>,
     pub(crate) index_build_mode: IndexBuildMode,
 }
@@ -97,8 +96,8 @@ Fragment mapping (thresholds applied to each individual fragment alignment):
 
 Sketch database / sharding:
   --bgzip                       Treat sketch sidecar inputs as bgzip-compressed.
-  --shard-size <n>              References per shard (count; default 10000).
-  --shard-minimizers <n>        Minimizer budget per shard (count; default: memory-aware).
+  --max-shard-minimizers <n>    Maximum estimated reference minimizers per shard
+                                  (default targets roughly 10 GiB shards).
   --max-concurrent-shards <n>    Maximum number of shards to query concurrently
   --index-build-mode <mode>     auto | hash | partitioned (default auto).
 
@@ -124,10 +123,19 @@ fn validate_and_read_path_list(list_path: &str) -> io::Result<Vec<String>> {
                 valid_paths.push(path.to_owned());
             }
             Ok(_) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("Path in list is not a file: {}", path)));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Path in list is not a file: {}", path),
+                ));
             }
             Err(e) => {
-                return Err(io::Error::new(e.kind(), format!("Cannot access path '{}' from list: {}\n{}", path, list_path, e)));
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Cannot access path '{}' from list: {}\n{}",
+                        path, list_path, e
+                    ),
+                ));
             }
         }
     }
@@ -160,9 +168,8 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
     let mut max_memory_bytes: Option<u64> = None;
-    let mut shard_size: usize = DEFAULT_SHARD_SIZE;
     let mut max_concurrent_shards: Option<usize> = None;
-    let mut shard_minimizers: Option<usize> = None;
+    let mut max_shard_minimizers: Option<usize> = None;
     let mut index_build_mode: IndexBuildMode = IndexBuildMode::Auto;
     let mut args: std::iter::Skip<std::env::Args> = env::args().skip(1);
 
@@ -195,11 +202,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 }
                 let validated_paths = validate_and_read_path_list(&value)?;
 
-                references.extend(
-                    validated_paths
-                        .into_iter()
-                        .map(FastaInput::from_path),
-                );
+                references.extend(validated_paths.into_iter().map(FastaInput::from_path));
             }
             "--query" => {
                 let value = args.next().ok_or_else(|| {
@@ -251,15 +254,14 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
 
                 let validated_paths = validate_and_read_path_list(&value)?;
 
-                queries.extend(
-                    validated_paths
-                        .into_iter()
-                        .map(FastaInput::from_path),
-                );
+                queries.extend(validated_paths.into_iter().map(FastaInput::from_path));
             }
             "--reference-sketch" => {
                 let value = args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--reference-sketch requires a path")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--reference-sketch requires a path",
+                    )
                 })?;
                 sketch_path = Some(PathBuf::from(value));
             }
@@ -341,18 +343,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
                 validate_mash_confidence(mash_confidence)?;
             }
-            "--shard-size" => {
-                let value = args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--shard-size requires a value")
-                })?;
-                shard_size = value.parse::<usize>().map_err(|err| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid --shard-size value {value:?}: {err}"),
-                    )
-                })?;
-                validate_shard_size(shard_size)?;
-            }
             "--max-concurrent-shards" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(
@@ -374,21 +364,21 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 }
                 max_concurrent_shards = Some(n);
             }
-            "--shard-minimizers" => {
+            "--max-shard-minimizers" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "--shard-minimizers requires a value",
+                        "--max-shard-minimizers requires a value",
                     )
                 })?;
-                let parsed_shard_minimizers: usize = value.parse::<usize>().map_err(|err| {
+                let parsed_max_shard_minimizers: usize = value.parse::<usize>().map_err(|err| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("invalid --shard-minimizers value {value:?}: {err}"),
+                        format!("invalid --max-shard-minimizers value {value:?}: {err}"),
                     )
                 })?;
-                validate_shard_minimizers(parsed_shard_minimizers)?;
-                shard_minimizers = Some(parsed_shard_minimizers);
+                validate_max_shard_minimizers(parsed_max_shard_minimizers)?;
+                max_shard_minimizers = Some(parsed_max_shard_minimizers);
             }
             "--tmp" => {
                 let value = args.next().ok_or_else(|| {
@@ -638,9 +628,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         ));
     }
 
-    let shard_minimizers: usize = shard_minimizers
-        .unwrap_or_else(|| default_shard_minimizers_for_runtime(threads, max_memory_bytes));
-    validate_shard_minimizers(shard_minimizers)?;
+    let max_shard_minimizers: usize = max_shard_minimizers
+        .unwrap_or_else(|| default_max_shard_minimizers_for_runtime(threads, max_memory_bytes));
+    validate_max_shard_minimizers(max_shard_minimizers)?;
 
     Ok(Some(CliArgs {
         references,
@@ -664,9 +654,8 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         mash_confidence,
         split_n_run,
         max_memory_bytes,
-        shard_size,
         max_concurrent_shards,
-        shard_minimizers,
+        max_shard_minimizers,
         index_build_mode,
     }))
 }

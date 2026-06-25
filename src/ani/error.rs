@@ -10,10 +10,8 @@ use std::io;
 /// A validation failure for a user-supplied parameter.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AniError {
-    #[error("--shard-size must be at least 1")]
-    ShardSizeTooSmall,
-    #[error("--shard-minimizers must be at least 1")]
-    ShardMinimizersTooSmall,
+    #[error("--max-shard-minimizers must be at least 1")]
+    MaxShardMinimizersTooSmall,
     #[error("--kmer-size must be between 1 and 16 for canonical-2bit-u32 keys")]
     KmerSizeOutOfRange,
     #[error("--window-size must be at least 1")]

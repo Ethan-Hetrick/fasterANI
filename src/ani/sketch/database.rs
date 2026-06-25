@@ -17,10 +17,10 @@ use crate::ani::{
     estimate_partitioned_shard_memory_bytes, legacy_sketch_path, manifest_path, memory_mib,
     plan_shards_by_minimizers, reference_list_checksum, shard_entry_path, shard_filename,
     shard_manifest_compatibility_error, shard_path, unix_timestamp_seconds,
-    validate_shard_minimizers, validate_shard_size, FastaInput, IndexBuildMode, ReferenceSketch,
-    RuntimeOptions, ShardBuildResult, ShardManifest, ShardManifestEntry, ShardPlan,
-    ShardedBuildOptions, SketchBuildStats, SketchParams, SKETCH_DATABASE_SCHEMA_VERSION,
-    SKETCH_KEY_MODE, SKETCH_VERSION,
+    validate_max_shard_minimizers, FastaInput, IndexBuildMode, ReferenceSketch, RuntimeOptions,
+    ShardBuildResult, ShardManifest, ShardManifestEntry, ShardPlan, ShardedBuildOptions,
+    SketchBuildStats, SketchParams, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE,
+    SKETCH_VERSION,
 };
 
 /// Reference database opened by the CLI, either legacy single-sketch or manifest-backed shards.
@@ -43,8 +43,7 @@ impl SketchDatabase {
     ) -> io::Result<Self> {
         let ShardedBuildOptions {
             tmp_dir,
-            shard_size,
-            shard_minimizers,
+            max_shard_minimizers,
             ..
         } = shard_opts;
         let Some(prefix) = sketch_prefix else {
@@ -55,8 +54,7 @@ impl SketchDatabase {
             )?));
         };
 
-        validate_shard_size(shard_size)?;
-        validate_shard_minimizers(shard_minimizers)?;
+        validate_max_shard_minimizers(max_shard_minimizers)?;
 
         let manifest_path: PathBuf = manifest_path(prefix);
         if manifest_path.exists() {
@@ -103,13 +101,11 @@ impl SketchDatabase {
         let ShardedBuildOptions {
             tmp_dir,
             bgzip,
-            shard_size,
-            shard_minimizers,
+            max_shard_minimizers,
             index_build_mode,
             threads,
         } = shard_opts;
-        validate_shard_size(shard_size)?;
-        validate_shard_minimizers(shard_minimizers)?;
+        validate_max_shard_minimizers(max_shard_minimizers)?;
         if let Some(parent) = prefix
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -122,7 +118,7 @@ impl SketchDatabase {
             emit_progress(
                 "database_build",
                 &format!(
-                    "event=start\tmode=sharded\tprefix={}\treferences={}\tshard_size={shard_size}\tshard_minimizers={shard_minimizers}\tthreads={}",
+                    "event=start\tmode=sharded\tprefix={}\treferences={}\tmax_shard_minimizers={max_shard_minimizers}\tthreads={}",
                     prefix.display(),
                     references.len(),
                     threads
@@ -136,8 +132,7 @@ impl SketchDatabase {
             kmer_size,
             window_size,
             split_n_run,
-            shard_size,
-            shard_minimizers,
+            max_shard_minimizers,
             threads,
             runtime_options,
         )?;
@@ -148,7 +143,7 @@ impl SketchDatabase {
             emit_progress(
                 "database_build",
                 &format!(
-                    "event=shards_planned\tshards={}\tbuild_parallelism={build_parallelism}\tthreads={threads}\tmax_memory_gb={}\tshard_minimizers={shard_minimizers}",
+                    "event=shards_planned\tshards={}\tbuild_parallelism={build_parallelism}\tthreads={threads}\tmax_memory_gb={}\tmax_shard_minimizers={max_shard_minimizers}",
                     shard_plans.len(),
                     runtime_options
                         .max_memory_bytes
@@ -283,8 +278,7 @@ impl SketchDatabase {
             min_fragment_length,
             split_n_run,
             dust_enabled: false,
-            shard_size,
-            shard_minimizers,
+            max_shard_minimizers,
             total_references: references.len(),
             total_reference_contigs,
             total_mapped_reference_length,

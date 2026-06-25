@@ -15,11 +15,11 @@ use rayon::prelude::*;
 
 use crate::ani::{
     check_memory_limit, emit_progress, expected_minimizer_window_count, open_fasta_reader,
-    slice_as_bytes, split_sequence_ranges, validate_shard_minimizers, validate_shard_size,
-    FastaInput, MinimizerKey, RuntimeOptions, ScratchFile, SeedHit, ShardManifest, ShardPlan,
-    DEFAULT_PARTITION_TARGET_BYTES, ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER,
-    MAX_PARTITION_COUNT, MIN_PARTITION_COUNT, PARTITIONED_INDEX_MINIMIZER_THRESHOLD,
-    REFERENCE_PROGRESS_INTERVAL, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE, SKETCH_VERSION,
+    slice_as_bytes, split_sequence_ranges, validate_max_shard_minimizers, FastaInput, MinimizerKey,
+    RuntimeOptions, ScratchFile, SeedHit, ShardManifest, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES,
+    ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
+    PARTITIONED_INDEX_MINIMIZER_THRESHOLD, REFERENCE_PROGRESS_INTERVAL,
+    SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE, SKETCH_VERSION,
 };
 
 /// User-selectable strategy for building the reference sketch index.
@@ -227,23 +227,20 @@ pub(crate) fn estimate_selected_minimizers_from_windows(
 
 pub(crate) fn plan_shards_from_minimizer_counts(
     minimizer_counts: &[usize],
-    shard_size: usize,
-    shard_minimizers: usize,
+    max_shard_minimizers: usize,
 ) -> io::Result<Vec<ShardPlan>> {
-    validate_shard_size(shard_size)?;
-    validate_shard_minimizers(shard_minimizers)?;
+    validate_max_shard_minimizers(max_shard_minimizers)?;
 
-    let estimated_shards = ceil_div_usize(minimizer_counts.len(), shard_size);
-    let mut plans = Vec::with_capacity(estimated_shards);
+    let mut plans = Vec::new();
     let mut shard_first_reference = 0;
     let mut shard_reference_count = 0;
     let mut shard_estimated_minimizers: usize = 0;
     for (reference_index, reference_minimizers) in minimizer_counts.iter().copied().enumerate() {
         let would_exceed_minimizers = shard_reference_count > 0
-            && shard_estimated_minimizers.saturating_add(reference_minimizers) > shard_minimizers;
-        let would_exceed_reference_count: bool = shard_reference_count >= shard_size;
+            && shard_estimated_minimizers.saturating_add(reference_minimizers)
+                > max_shard_minimizers;
 
-        if would_exceed_minimizers || would_exceed_reference_count {
+        if would_exceed_minimizers {
             plans.push(ShardPlan {
                 first_reference: shard_first_reference,
                 reference_count: shard_reference_count,
@@ -276,13 +273,11 @@ pub(crate) fn plan_shards_by_minimizers(
     kmer_size: usize,
     window_size: usize,
     split_n_run: usize,
-    shard_size: usize,
-    shard_minimizers: usize,
+    max_shard_minimizers: usize,
     threads: usize,
     runtime_options: RuntimeOptions,
 ) -> io::Result<Vec<ShardPlan>> {
-    validate_shard_size(shard_size)?;
-    validate_shard_minimizers(shard_minimizers)?;
+    validate_max_shard_minimizers(max_shard_minimizers)?;
 
     let plan_start: Instant = Instant::now();
     let planner_threads = threads.max(1).min(references.len().max(1));
@@ -291,7 +286,7 @@ pub(crate) fn plan_shards_by_minimizers(
         emit_progress(
             "shard_plan",
             &format!(
-                "event=start\testimator=window-count\treferences={}\tshard_size={shard_size}\tshard_minimizers={shard_minimizers}\tthreads={threads}\tplanner_parallelism={planner_threads}",
+                "event=start\testimator=window-count\treferences={}\tmax_shard_minimizers={max_shard_minimizers}\tthreads={threads}\tplanner_parallelism={planner_threads}",
                 references.len(),
             ),
             plan_start,
@@ -346,7 +341,7 @@ pub(crate) fn plan_shards_by_minimizers(
     })?;
 
     let plans: Vec<ShardPlan> =
-        plan_shards_from_minimizer_counts(&minimizer_counts, shard_size, shard_minimizers)?;
+        plan_shards_from_minimizer_counts(&minimizer_counts, max_shard_minimizers)?;
 
     if runtime_options.progress_enabled {
         emit_progress(
@@ -491,8 +486,7 @@ mod tests {
 
     #[test]
     fn shard_planner_splits_by_minimizer_target() -> io::Result<()> {
-        let plans: Vec<ShardPlan> =
-            plan_shards_from_minimizer_counts(&[200, 250, 100, 400], 10, 500)?;
+        let plans: Vec<ShardPlan> = plan_shards_from_minimizer_counts(&[200, 250, 100, 400], 500)?;
 
         assert_eq!(
             plans,
@@ -514,29 +508,16 @@ mod tests {
     }
 
     #[test]
-    fn shard_planner_respects_reference_count_cap() -> io::Result<()> {
-        let plans: Vec<ShardPlan> =
-            plan_shards_from_minimizer_counts(&[10, 10, 10, 10, 10], 2, 500)?;
+    fn shard_planner_allows_single_oversized_reference() -> io::Result<()> {
+        let plans: Vec<ShardPlan> = plan_shards_from_minimizer_counts(&[600], 500)?;
 
         assert_eq!(
             plans,
-            vec![
-                ShardPlan {
-                    first_reference: 0,
-                    reference_count: 2,
-                    estimated_minimizers: 20,
-                },
-                ShardPlan {
-                    first_reference: 2,
-                    reference_count: 2,
-                    estimated_minimizers: 20,
-                },
-                ShardPlan {
-                    first_reference: 4,
-                    reference_count: 1,
-                    estimated_minimizers: 10,
-                },
-            ]
+            vec![ShardPlan {
+                first_reference: 0,
+                reference_count: 1,
+                estimated_minimizers: 600,
+            }]
         );
 
         Ok(())
