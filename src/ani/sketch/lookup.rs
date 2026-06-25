@@ -18,6 +18,7 @@ impl ReferenceSketch {
         seed_hits: &mut Vec<SeedHit>,
         candidate_regions: &mut Vec<ReferenceCandidateRegion>,
         slot_sorted_minimizers: &mut Vec<(u64, MinimizerKey)>,
+        hit_ranges: &mut Vec<(u32, u32)>,
         #[cfg(debug_assertions)] mut mapping_metrics: Option<&mut MappingMetrics>,
     ) {
         seed_hits.clear();
@@ -43,16 +44,27 @@ impl ReferenceSketch {
                 }
             }
         } else {
+            hit_ranges.clear();
             for &(slot, minimizer) in slot_sorted_minimizers.iter() {
-                let hits: Option<&[SeedHit]> = self.index.get_by_slot(slot as usize, &minimizer);
+                let hit_range = self.index.hit_range_by_slot(slot as usize, &minimizer);
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
-                    metrics.record_seed_lookup(hits.map(<[SeedHit]>::len), frequency_threshold);
+                    metrics.record_seed_lookup(
+                        hit_range.map(|(_, count)| count as usize),
+                        frequency_threshold,
+                    );
                 }
-                if let Some(hits) = hits {
-                    if hits.len() < frequency_threshold {
-                        seed_hits.extend_from_slice(hits);
+                if let Some((offset, count)) = hit_range {
+                    if (count as usize) < frequency_threshold {
+                        hit_ranges.push((offset, count));
                     }
+                }
+            }
+
+            hit_ranges.sort_unstable_by_key(|&(offset, _)| offset);
+            for &(offset, count) in hit_ranges.iter() {
+                if let Some(hits) = self.index.hit_payload_range(offset, count) {
+                    seed_hits.extend_from_slice(hits);
                 }
             }
         }

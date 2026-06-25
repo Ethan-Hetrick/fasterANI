@@ -243,10 +243,21 @@ impl ReferenceIndex {
         }
     }
 
-    pub(crate) fn get_by_slot(&self, slot: usize, minimizer: &MinimizerKey) -> Option<&[SeedHit]> {
+    pub(crate) fn hit_range_by_slot(
+        &self,
+        slot: usize,
+        minimizer: &MinimizerKey,
+    ) -> Option<(u32, u32)> {
         match self {
-            Self::Mphf(index) => index.get_by_slot(slot, minimizer),
-            Self::Hash(_) => self.get(minimizer),
+            Self::Mphf(index) => index.hit_range_by_slot(slot, minimizer),
+            Self::Hash(_) => None,
+        }
+    }
+
+    pub(crate) fn hit_payload_range(&self, offset: u32, count: u32) -> Option<&[SeedHit]> {
+        match self {
+            Self::Mphf(index) => index.hit_payload_range(offset, count),
+            Self::Hash(_) => None,
         }
     }
 

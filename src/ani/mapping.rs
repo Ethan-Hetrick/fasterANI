@@ -327,6 +327,7 @@ fn map_query_fragment_into(
         &mut scratch.seed_hits,
         &mut scratch.candidate_regions,
         &mut scratch.slot_sorted_minimizers,
+        &mut scratch.hit_ranges,
         #[cfg(debug_assertions)]
         collect_metrics.then_some(&mut *mapping_metrics),
     );
