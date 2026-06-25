@@ -57,15 +57,7 @@ impl ReferenceSketch {
             }
         }
 
-        seed_hits.sort_unstable_by_key(|hit| (hit.reference_contig_id, hit.minimizer_offset));
-
-        // Helper: recover the genomic position for a hit from the contig minimizer array.
-        let pos_of = |hit: SeedHit| -> u32 {
-            self.contigs
-                .minimizers(hit.reference_contig_id as usize)
-                .and_then(|mins| mins.get(hit.minimizer_offset as usize))
-                .map_or(0, |m| m.position)
-        };
+        seed_hits.sort_unstable_by_key(|hit| (hit.reference_contig_id, hit.position));
 
         let minimum_shared_minimizers: usize = minimum_shared_minimizers.max(1);
 
@@ -85,8 +77,8 @@ impl ReferenceSketch {
                 continue;
             }
 
-            let first_pos = pos_of(first);
-            let last_pos  = pos_of(last);
+            let first_pos = first.position;
+            let last_pos = last.position;
 
             if last_pos.saturating_sub(first_pos) >= fragment_length {
                 continue;

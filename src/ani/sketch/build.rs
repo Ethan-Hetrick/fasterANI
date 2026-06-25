@@ -156,13 +156,13 @@ impl ReferenceSketch {
                     reference_minimizers.sort_unstable_by_key(|minimizer| minimizer.position);
                     index.reserve(reference_minimizers.len());
 
-                    for (local_idx, minimizer) in reference_minimizers.iter().enumerate() {
+                    for minimizer in &reference_minimizers {
                         index.entry(minimizer.hash).or_default().push(SeedHit {
                             reference_contig_id: reference_contig_id as u32,
-                            minimizer_offset: local_idx as u32,
+                            position: minimizer.position,
                         });
                     }
-                    
+
                     total_reference_minimizers += reference_minimizers.len();
                     total_seed_hits += reference_minimizers.len();
 

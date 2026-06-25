@@ -521,11 +521,15 @@ impl ReferenceSketch {
 
         let slot_keys_offset: usize = align_up(metadata_end, 8);
         let hit_offsets_offset: usize = align_up(
-            checked_section_end(slot_keys_offset, cached.key_count, size_of::<MinimizerKey>())?,
+            checked_section_end(
+                slot_keys_offset,
+                cached.key_count,
+                size_of::<MinimizerKey>(),
+            )?,
             align_of::<u32>(),
         );
         let hit_counts_offset: usize =
-    checked_section_end(hit_offsets_offset, cached.key_count, size_of::<u32>())?;
+            checked_section_end(hit_offsets_offset, cached.key_count, size_of::<u32>())?;
         let hit_payloads_offset: usize = align_up(
             checked_section_end(hit_counts_offset, cached.key_count, size_of::<u32>())?,
             align_of::<SeedHit>(),
@@ -891,10 +895,10 @@ mod tests {
         ];
         let mut index: ReferenceHitMap = ReferenceHitMap::default();
         for (contig_id, contig) in contigs.iter().enumerate() {
-            for (local_idx, minimizer) in contig.minimizers.iter().enumerate() {
+            for minimizer in &contig.minimizers {
                 index.entry(minimizer.hash).or_default().push(SeedHit {
                     reference_contig_id: contig_id as u32,
-                    minimizer_offset: local_idx as u32,
+                    position: minimizer.position,
                 });
             }
         }

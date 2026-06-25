@@ -165,10 +165,10 @@ impl ReferenceSketch {
                     reference_minimizers.sort_unstable_by_key(|minimizer| minimizer.position);
                     index.reserve(reference_minimizers.len());
 
-                    for (local_idx, minimizer) in reference_minimizers.iter().enumerate() {
+                    for minimizer in &reference_minimizers {
                         index.entry(minimizer.hash).or_default().push(SeedHit {
                             reference_contig_id: reference_contig_id as u32,
-                            minimizer_offset: local_idx as u32,
+                            position: minimizer.position,
                         });
                     }
 
@@ -394,12 +394,12 @@ impl ReferenceSketch {
                                 format!("reference contig id exceeds sketch cache limit: {err}"),
                             )
                         })?;
-                    for (local_idx, minimizer) in reference_minimizers.iter().enumerate() {
+                    for minimizer in &reference_minimizers {
                         partition_writers.push(PartitionHitRecord {
                             key: minimizer.hash,
                             hit: SeedHit {
                                 reference_contig_id: reference_contig_id_u32,
-                                minimizer_offset: local_idx as u32,
+                                position: minimizer.position,
                             },
                         })?;
                     }
@@ -548,7 +548,11 @@ impl ReferenceSketch {
     ) -> io::Result<PartitionGroupResult> {
         let mut records: Vec<PartitionHitRecord> = Self::read_partition_records(partition_path)?;
         records.sort_unstable_by_key(|record| {
-            (record.key, record.hit.reference_contig_id, record.hit.minimizer_offset)
+            (
+                record.key,
+                record.hit.reference_contig_id,
+                record.hit.position,
+            )
         });
 
         let (grouped_key_scratch, grouped_key_file): (ScratchFile, fs::File) = ScratchFile::create(
