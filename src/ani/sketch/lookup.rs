@@ -17,21 +17,42 @@ impl ReferenceSketch {
         frequency_threshold: usize,
         seed_hits: &mut Vec<SeedHit>,
         candidate_regions: &mut Vec<ReferenceCandidateRegion>,
+        slot_sorted_minimizers: &mut Vec<(u64, MinimizerKey)>,
         #[cfg(debug_assertions)] mut mapping_metrics: Option<&mut MappingMetrics>,
     ) {
         seed_hits.clear();
         candidate_regions.clear();
 
-        for minimizer in query_minimizers {
-            let hits: Option<&[SeedHit]> = self.index.get(minimizer);
-            #[cfg(debug_assertions)]
-            if let Some(metrics) = mapping_metrics.as_deref_mut() {
-                metrics.record_seed_lookup(hits.map(<[SeedHit]>::len), frequency_threshold);
-            }
+        // Batch-compute MPHF slots and sort ascending so slot_keys / hit_offsets /
+        // hit_counts are accessed sequentially rather than randomly across the mmap.
+        self.index
+            .slot_sorted_minimizers(query_minimizers, slot_sorted_minimizers);
 
-            if let Some(hits) = hits {
-                if hits.len() < frequency_threshold {
-                    seed_hits.extend_from_slice(hits);
+        if slot_sorted_minimizers.is_empty() {
+            // Hash index path or no minimizers found: fall back to direct lookup.
+            for minimizer in query_minimizers {
+                let hits: Option<&[SeedHit]> = self.index.get(minimizer);
+                #[cfg(debug_assertions)]
+                if let Some(metrics) = mapping_metrics.as_deref_mut() {
+                    metrics.record_seed_lookup(hits.map(<[SeedHit]>::len), frequency_threshold);
+                }
+                if let Some(hits) = hits {
+                    if hits.len() < frequency_threshold {
+                        seed_hits.extend_from_slice(hits);
+                    }
+                }
+            }
+        } else {
+            for &(slot, minimizer) in slot_sorted_minimizers.iter() {
+                let hits: Option<&[SeedHit]> = self.index.get_by_slot(slot as usize, &minimizer);
+                #[cfg(debug_assertions)]
+                if let Some(metrics) = mapping_metrics.as_deref_mut() {
+                    metrics.record_seed_lookup(hits.map(<[SeedHit]>::len), frequency_threshold);
+                }
+                if let Some(hits) = hits {
+                    if hits.len() < frequency_threshold {
+                        seed_hits.extend_from_slice(hits);
+                    }
                 }
             }
         }

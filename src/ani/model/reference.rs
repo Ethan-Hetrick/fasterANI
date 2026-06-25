@@ -217,6 +217,39 @@ impl ReferenceIndex {
         }
     }
 
+    /// Populate `out` with `(slot, minimizer)` pairs for all minimizers that
+    /// exist in the index, sorted ascending by slot. Clears `out` first.
+    pub(crate) fn slot_sorted_minimizers(
+        &self,
+        minimizers: &[MinimizerKey],
+        out: &mut Vec<(u64, MinimizerKey)>,
+    ) {
+        out.clear();
+        match self {
+            Self::Mphf(index) => {
+                for &minimizer in minimizers {
+                    if let Some(slot) = index.mphf.try_hash(&minimizer) {
+                        if (slot as usize) < index.key_count {
+                            out.push((slot, minimizer));
+                        }
+                    }
+                }
+                out.sort_unstable_by_key(|&(slot, _)| slot);
+            }
+            Self::Hash(_) => {
+                // In-memory hash map has no meaningful slot ordering;
+                // leave out empty and fall back to direct lookup in the caller.
+            }
+        }
+    }
+
+    pub(crate) fn get_by_slot(&self, slot: usize, minimizer: &MinimizerKey) -> Option<&[SeedHit]> {
+        match self {
+            Self::Mphf(index) => index.get_by_slot(slot, minimizer),
+            Self::Hash(_) => self.get(minimizer),
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         match self {
             Self::Hash(index) => index.len(),

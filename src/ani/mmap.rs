@@ -43,6 +43,23 @@ impl MmapReferenceIndex {
         self.hit_payloads().get(start..end)
     }
 
+    /// Look up hits for a minimizer whose MPHF slot is already known,
+    /// skipping the hash computation. Returns None if the slot key does
+    /// not match (hash collision in the perfect hash sense is impossible,
+    /// but the slot may be vacant if try_hash returned a spurious value).
+    pub(crate) fn get_by_slot(&self, slot: usize, minimizer: &MinimizerKey) -> Option<&[SeedHit]> {
+        if slot >= self.key_count {
+            return None;
+        }
+        if self.slot_keys()[slot] != *minimizer {
+            return None;
+        }
+        let start = self.hit_offsets()[slot] as usize;
+        let count = self.hit_counts()[slot] as usize;
+        let end = start.checked_add(count)?;
+        self.hit_payloads().get(start..end)
+    }
+
     pub(crate) fn slot_keys(&self) -> &[MinimizerKey] {
         mmap_slice_at(&self.mmap, self.slot_keys_offset, self.key_count)
     }

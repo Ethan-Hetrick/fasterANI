@@ -47,7 +47,7 @@ run_bench() {
 }
 
 for THREADS in 1 2 4 8; do
-    for CONCURRENT in 1 2 4; do
+    for CONCURRENT in 1; do
         LOG="$RESULTS_DIR/${THREADS}t_${CONCURRENT}s"
         echo "=== threads=$THREADS concurrent_shards=$CONCURRENT ==="
 

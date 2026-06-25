@@ -326,6 +326,7 @@ fn map_query_fragment_into(
         frequency_threshold,
         &mut scratch.seed_hits,
         &mut scratch.candidate_regions,
+        &mut scratch.slot_sorted_minimizers,
         #[cfg(debug_assertions)]
         collect_metrics.then_some(&mut *mapping_metrics),
     );

@@ -100,4 +100,5 @@ pub(crate) struct MappingScratch {
     pub(crate) candidate_regions: Vec<ReferenceCandidateRegion>,
     pub(crate) fragment_mappings: Vec<MappingResult>,
     pub(crate) counter: SlidingSketchCounter,
+    pub(crate) slot_sorted_minimizers: Vec<(u64, MinimizerKey)>,
 }
