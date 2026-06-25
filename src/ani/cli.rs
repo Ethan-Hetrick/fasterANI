@@ -69,8 +69,8 @@ Output:
 Seeding (minimizer sketch; applies to both references and queries):
   --kmer-size <n>               K-mer size for minimizers (default 16).
   --window-size <n>             Minimizer window size (default 24).
-  --minmer-count <n>            Keep only the n smallest-hash minimizers ('minmers')
-                                  per query fragment (default: keep all).
+  --minmer-count <n>            Keep only the n smallest-hash minimizers ('minmers') per query
+                                  fragment for candidate scoring (default behavior uses all).
   --freq-threshold-percent <p>  Ignore reference minimizers occurring in more than p%
                                   of reference positions; 0..100, 0 disables (default 0).
 
