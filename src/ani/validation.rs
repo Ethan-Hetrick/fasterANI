@@ -37,6 +37,7 @@ pub(crate) fn validate_max_shard_minimizers(max_shard_minimizers: usize) -> Resu
     if max_shard_minimizers == 0 {
         return Err(AniError::MaxShardMinimizersTooSmall);
     }
+    eprintln!("max_shard_minimizers = {}", max_shard_minimizers);
 
     Ok(())
 }
@@ -45,6 +46,7 @@ pub(crate) fn validate_kmer_size(kmer_size: usize) -> Result<(), AniError> {
     if !(1..=16).contains(&kmer_size) {
         return Err(AniError::KmerSizeOutOfRange);
     }
+    eprintln!("kmer_size = {}", kmer_size);
 
     Ok(())
 }
@@ -53,6 +55,7 @@ pub(crate) fn validate_window_size(window_size: usize) -> Result<(), AniError> {
     if window_size == 0 {
         return Err(AniError::WindowSizeTooSmall);
     }
+    eprintln!("window_size = {}", window_size);
 
     Ok(())
 }
@@ -61,6 +64,7 @@ pub(crate) fn validate_fragment_length(fragment_length: u32) -> Result<(), AniEr
     if fragment_length == 0 {
         return Err(AniError::FragmentLengthTooSmall);
     }
+    eprintln!("fragment_length = {}", fragment_length);
 
     Ok(())
 }
@@ -69,6 +73,7 @@ pub(crate) fn validate_min_identity(min_identity: f64) -> Result<(), AniError> {
     if !min_identity.is_finite() || !(0.0..=100.0).contains(&min_identity) {
         return Err(AniError::MinIdentityOutOfRange);
     }
+    eprintln!("min_identity = {}", min_identity);
 
     Ok(())
 }
@@ -77,6 +82,7 @@ pub(crate) fn validate_mash_confidence(mash_confidence: f64) -> Result<(), AniEr
     if !mash_confidence.is_finite() || !(0.0..1.0).contains(&mash_confidence) {
         return Err(AniError::MashConfidenceOutOfRange);
     }
+    eprintln!("mash_confidence = {}", mash_confidence);
 
     Ok(())
 }

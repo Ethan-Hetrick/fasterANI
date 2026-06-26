@@ -1,6 +1,6 @@
 //! Command-line argument parsing and the `--help` text.
 
-use std::{env, fs, io, path::PathBuf, process};
+use std::{env, fs, io, path::PathBuf, process, path};
 
 use crate::ani::{
     default_max_shard_minimizers_for_runtime, is_stdin_path, validate_fragment_length,
@@ -109,8 +109,9 @@ Resources:
   -v, --version                 Show version."
 }
 
-fn validate_and_read_path_list(list_path: &str) -> io::Result<Vec<String>> {
-    let contents = fs::read_to_string(list_path)?;
+fn validate_and_read_path_list(list_path: &str) -> io::Result<(PathBuf, Vec<String>)> {
+    let absolute_path = path::absolute(list_path)?;
+    let contents = fs::read_to_string(&absolute_path)?;
     let mut valid_paths = Vec::new();
 
     for line in contents.lines() {
@@ -119,9 +120,11 @@ fn validate_and_read_path_list(list_path: &str) -> io::Result<Vec<String>> {
             continue;
         }
 
-        match fs::metadata(path) {
+        let absolute_item_path = path::absolute(path)?;
+
+        match fs::metadata(&absolute_item_path) {
             Ok(meta) if meta.is_file() => {
-                valid_paths.push(path.to_owned());
+                valid_paths.push(absolute_item_path.to_string_lossy().into_owned());
             }
             Ok(_) => {
                 return Err(io::Error::new(
@@ -140,7 +143,7 @@ fn validate_and_read_path_list(list_path: &str) -> io::Result<Vec<String>> {
             }
         }
     }
-    Ok(valid_paths)
+    Ok((absolute_path, valid_paths))
 }
 
 /// Parse command-line arguments.
@@ -180,14 +183,14 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--reference requires a path")
                 })?;
-
-                match fs::exists(&value) {
-                    Ok(true) => eprintln!(">>> Reference file: {}", value),
-                    Ok(false) => eprintln!("ERROR: Reference file {} does not exist.", value),
+                let reference_absolute_path = path::absolute(&value)?;
+                match fs::exists(&reference_absolute_path) {
+                    Ok(true) => eprintln!("reference_file = \"{}\"", reference_absolute_path.display()),
+                    Ok(false) => eprintln!("ERROR: Reference file {} does not exist.", reference_absolute_path.display()),
                     Err(e) => eprintln!("ERROR: Error loading reference: {}", e),
                 }
 
-                references.push(FastaInput::from_path(value));
+                references.push(FastaInput::from_path(reference_absolute_path.display().to_string()));
             }
             "--reference-list" => {
                 let value = args.next().ok_or_else(|| {
@@ -196,12 +199,12 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--reference-list requires a path",
                     )
                 })?;
+                let (absolute_path, validated_paths) = validate_and_read_path_list(&value)?;
                 match fs::exists(&value) {
-                    Ok(true) => eprintln!(">>> Reference list: {}", value),
-                    Ok(false) => eprintln!("ERROR: Reference list {} does not exist.", value),
+                    Ok(true) => eprintln!("reference_list = \"{}\"", absolute_path.display()),
+                    Ok(false) => eprintln!("ERROR: Reference list {} does not exist.", absolute_path.display()),
                     Err(e) => eprintln!("ERROR: Error loading reference list: {}", e),
                 }
-                let validated_paths = validate_and_read_path_list(&value)?;
 
                 references.extend(validated_paths.into_iter().map(FastaInput::from_path));
             }
@@ -218,12 +221,13 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                             "--query-name may only be used with `--query -`",
                         ));
                     }
-                    match fs::exists(&value) {
-                        Ok(true) => eprintln!(">>> Query file: {}", value),
-                        Ok(false) => eprintln!("ERROR: Query file {} does not exist.", value),
+                    let query_absolute_path = path::absolute(&value)?;
+                    match fs::exists(&query_absolute_path) {
+                        Ok(true) => eprintln!("query_file = \"{}\"", query_absolute_path.display()),
+                        Ok(false) => eprintln!("ERROR: query_file {} does not exist.", query_absolute_path.display()),
                         Err(e) => eprintln!("ERROR: Error loading query: {}", e),
                     }
-                    queries.push(FastaInput::from_path(value));
+                    queries.push(FastaInput::from_path(query_absolute_path.display().to_string()));
                 }
             }
             "--query-name" => {
@@ -242,18 +246,12 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query-list requires a path")
                 })?;
+                let (absolute_path, validated_paths) = validate_and_read_path_list(&value)?;
                 match fs::exists(&value) {
-                    Ok(true) => eprintln!(">>> Query list: {}", value),
-                    Ok(false) => eprintln!("ERROR: Query list {} does not exist.", value),
+                    Ok(true) => eprintln!("query_list = \"{}\"", absolute_path.display()),
+                    Ok(false) => eprintln!("ERROR: Query list {} does not exist.", absolute_path.display()),
                     Err(e) => eprintln!("ERROR: Error loading query list: {}", e),
                 }
-                match fs::exists(&value) {
-                    Ok(true) => eprintln!(">>> Reference list: {}", value),
-                    Ok(false) => eprintln!("ERROR: Reference list {} does not exist.", value),
-                    Err(e) => eprintln!("ERROR: Error loading reference list: {}", e),
-                }
-
-                let validated_paths = validate_and_read_path_list(&value)?;
 
                 queries.extend(validated_paths.into_iter().map(FastaInput::from_path));
             }
