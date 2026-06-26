@@ -1,6 +1,6 @@
 //! Command-line argument parsing and the `--help` text.
 
-use std::{env, fs, io, path::PathBuf};
+use std::{env, fs, io, path::PathBuf, process};
 
 use crate::ani::{
     default_max_shard_minimizers_for_runtime, is_stdin_path, validate_fragment_length,
@@ -105,7 +105,8 @@ Resources:
   --threads <n>                 Worker threads, >= 1 (default 1).
   --max-memory-gb <gb>          Soft memory ceiling in GB (default: unlimited).
   --tmp <dir>                   Directory for temporary shard files.
-  -h, --help                    Show this help."
+  -h, --help                    Show help.
+  -v, --version                 Show version."
 }
 
 fn validate_and_read_path_list(list_path: &str) -> io::Result<Vec<String>> {
@@ -539,6 +540,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             "--help" | "-h" => {
                 eprintln!("{}", usage());
                 return Ok(None);
+            }
+            "--version" | "v" => {
+                eprintln!("fasterANI {}", env!("CARGO_PKG_VERSION"));
+                process::exit(0);
             }
             _ => {
                 return Err(io::Error::new(
