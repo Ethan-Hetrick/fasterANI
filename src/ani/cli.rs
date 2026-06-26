@@ -537,7 +537,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             "--verbose" => {
                 verbose = true;
             }
-            "--help" | "-h" => {
+            "--help" | "-h" | "--h" | "help" | "-?" => {
                 eprintln!("{}", usage());
                 return Ok(None);
             }
