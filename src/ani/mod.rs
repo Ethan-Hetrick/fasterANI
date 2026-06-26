@@ -15,6 +15,7 @@ mod metrics;
 mod minimizer;
 mod mmap;
 mod model;
+mod params_file;
 mod pipeline;
 mod runtime;
 mod sketch;
@@ -32,6 +33,7 @@ pub(crate) use metrics::*;
 pub(crate) use minimizer::*;
 pub(crate) use mmap::*;
 pub(crate) use model::*;
+pub(crate) use params_file::*;
 pub(crate) use runtime::*;
 pub(crate) use sketch::*;
 #[cfg(test)]
