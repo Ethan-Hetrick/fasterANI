@@ -95,9 +95,9 @@ Fragment mapping (thresholds applied to each individual fragment alignment):
   ANI as the length-weighted mean of those retained fragments' identities.
 
 Sketch database / sharding:
-  --bgzip                       Treat sketch sidecar inputs as bgzip-compressed.
+  --bgzip                       Enable if reference sketch input is bgzip-compressed.
   --max-shard-minimizers <n>    Maximum estimated reference minimizers per shard
-                                  (default targets roughly 10 GiB shards).
+                                  (default is 500_000_000, producing ~10 GiB shards).
   --max-concurrent-shards <n>    Maximum number of shards to query concurrently
   --index-build-mode <mode>     auto | hash | partitioned (default auto).
 
