@@ -1,14 +1,15 @@
 //! Command-line argument parsing and the `--help` text.
 
-use std::{env, fs, io, path::PathBuf, process, path};
+use std::{env, fs, io, path, path::PathBuf, process};
 
 use crate::ani::{
     default_max_shard_minimizers_for_runtime, is_stdin_path, validate_fragment_length,
     validate_kmer_size, validate_mash_confidence, validate_max_shard_minimizers,
     validate_min_identity, validate_window_size, FastaInput, IndexBuildMode,
     DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT,
-    DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE, DEFAULT_MIN_FRAGMENT_LENGTH,
-    DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE, DEFAULT_MAX_SHARD_MINIMIZERS,
+    DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_SPLIT_N_RUN,
+    DEFAULT_WINDOW_SIZE,
 };
 
 /// Parsed command-line arguments.
@@ -146,10 +147,185 @@ fn validate_and_read_path_list(list_path: &str) -> io::Result<(PathBuf, Vec<Stri
     Ok((absolute_path, valid_paths))
 }
 
+#[derive(Default)]
+struct RuntimeStartupOutput {
+    reference_files: Vec<String>,
+    reference_lists: Vec<String>,
+    query_files: Vec<String>,
+    query_lists: Vec<String>,
+    query_name: Option<String>,
+}
+
+impl RuntimeStartupOutput {
+    fn emit(&self, args: &CliArgs, user_options: &UserOptionSet) {
+        let mut entries: Vec<String> = Vec::new();
+
+        push_toml_array(&mut entries, "reference_files", &self.reference_files);
+        push_toml_array(&mut entries, "reference_lists", &self.reference_lists);
+        push_toml_array(&mut entries, "query_files", &self.query_files);
+        push_toml_array(&mut entries, "query_lists", &self.query_lists);
+        push_toml_string(&mut entries, "query_name", self.query_name.as_deref());
+        push_toml_path(&mut entries, "reference_sketch", args.sketch_path.as_ref());
+        push_toml_path(&mut entries, "tmp", args.tmp_dir.as_ref());
+        push_toml_path(&mut entries, "out", args.out_path.as_ref());
+        push_toml_path(
+            &mut entries,
+            "mapping_stats",
+            args.mapping_stats_path.as_ref(),
+        );
+        push_toml_bool(&mut entries, "bgzip", args.bgzip);
+        push_toml_bool(&mut entries, "header", args.emit_header);
+        push_toml_bool(&mut entries, "verbose", args.verbose);
+
+        if user_options.threads && args.threads != 1 {
+            entries.push(format!("threads = {}", args.threads));
+        }
+        if user_options.freq_threshold_percent
+            && args.freq_threshold_percent != DEFAULT_FREQ_THRESHOLD_PERCENT
+        {
+            entries.push(format!(
+                "freq_threshold_percent = {}",
+                args.freq_threshold_percent
+            ));
+        }
+        if let Some(minmer_count) = args.minmer_count {
+            entries.push(format!("minmer_count = {minmer_count}"));
+        }
+        if user_options.kmer_size && args.kmer_size != DEFAULT_KMER_SIZE {
+            entries.push(format!("kmer_size = {}", args.kmer_size));
+        }
+        if user_options.window_size && args.window_size != DEFAULT_WINDOW_SIZE {
+            entries.push(format!("window_size = {}", args.window_size));
+        }
+        if user_options.fragment_length && args.fragment_length != DEFAULT_FRAGMENT_LENGTH {
+            entries.push(format!("fragment_length = {}", args.fragment_length));
+        }
+        if user_options.fragment_stride && args.fragment_stride != args.fragment_length {
+            entries.push(format!("fragment_stride = {}", args.fragment_stride));
+        }
+        if user_options.min_fragment_length && args.min_fragment_length != args.fragment_length {
+            entries.push(format!(
+                "min_fragment_length = {}",
+                args.min_fragment_length
+            ));
+        }
+        if user_options.min_identity && args.min_identity != DEFAULT_MIN_PERCENT_IDENTITY {
+            entries.push(format!("min_identity = {}", args.min_identity));
+        }
+        if user_options.mash_confidence && args.mash_confidence != DEFAULT_MASH_CONFIDENCE {
+            entries.push(format!("mash_confidence = {}", args.mash_confidence));
+        }
+        if user_options.split_n_run && args.split_n_run != DEFAULT_SPLIT_N_RUN {
+            entries.push(format!("split_n_run = {}", args.split_n_run));
+        }
+        if let Some(max_memory_bytes) = args.max_memory_bytes {
+            entries.push(format!(
+                "max_memory_gb = {}",
+                max_memory_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+            ));
+        }
+        if let Some(max_concurrent_shards) = args.max_concurrent_shards {
+            entries.push(format!("max_concurrent_shards = {max_concurrent_shards}"));
+        }
+        if user_options.max_shard_minimizers
+            && args.max_shard_minimizers != DEFAULT_MAX_SHARD_MINIMIZERS
+        {
+            entries.push(format!(
+                "max_shard_minimizers = {}",
+                args.max_shard_minimizers
+            ));
+        }
+        if user_options.index_build_mode && args.index_build_mode != IndexBuildMode::Auto {
+            entries.push(format!(
+                "index_build_mode = \"{}\"",
+                args.index_build_mode.name()
+            ));
+        }
+
+        if entries.is_empty() {
+            return;
+        }
+
+        eprintln!("################# FasterANI non-default runtime parameters #################");
+        for entry in entries {
+            eprintln!("{entry}");
+        }
+        eprintln!("############################################################################");
+    }
+}
+
+#[derive(Default)]
+struct UserOptionSet {
+    threads: bool,
+    freq_threshold_percent: bool,
+    kmer_size: bool,
+    window_size: bool,
+    fragment_length: bool,
+    fragment_stride: bool,
+    min_fragment_length: bool,
+    min_identity: bool,
+    mash_confidence: bool,
+    split_n_run: bool,
+    max_shard_minimizers: bool,
+    index_build_mode: bool,
+}
+
+fn push_toml_array(entries: &mut Vec<String>, key: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+
+    let values: Vec<String> = values
+        .iter()
+        .map(|value| format!("\"{}\"", toml_escape(value)))
+        .collect();
+    entries.push(format!("{key} = [{}]", values.join(", ")));
+}
+
+fn push_toml_path(entries: &mut Vec<String>, key: &str, path: Option<&PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    entries.push(format!(
+        "{key} = \"{}\"",
+        toml_escape(&path.display().to_string())
+    ));
+}
+
+fn push_toml_string(entries: &mut Vec<String>, key: &str, value: Option<&str>) {
+    let Some(value) = value else {
+        return;
+    };
+    entries.push(format!("{key} = \"{}\"", toml_escape(value)));
+}
+
+fn push_toml_bool(entries: &mut Vec<String>, key: &str, value: bool) {
+    if value {
+        entries.push(format!("{key} = true"));
+    }
+}
+
+fn toml_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// Parse command-line arguments.
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut references: Vec<FastaInput> = Vec::new();
     let mut queries: Vec<FastaInput> = Vec::new();
+    let mut startup_output = RuntimeStartupOutput::default();
+    let mut user_options = UserOptionSet::default();
     let mut stdin_query_name: Option<String> = None;
     let mut sketch_path: Option<PathBuf> = None;
     let mut tmp_dir: Option<PathBuf> = None;
@@ -185,12 +361,20 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
                 let reference_absolute_path = path::absolute(&value)?;
                 match fs::exists(&reference_absolute_path) {
-                    Ok(true) => eprintln!("reference_file = \"{}\"", reference_absolute_path.display()),
-                    Ok(false) => eprintln!("ERROR: Reference file {} does not exist.", reference_absolute_path.display()),
+                    Ok(true) => {}
+                    Ok(false) => eprintln!(
+                        "ERROR: Reference file {} does not exist.",
+                        reference_absolute_path.display()
+                    ),
                     Err(e) => eprintln!("ERROR: Error loading reference: {}", e),
                 }
 
-                references.push(FastaInput::from_path(reference_absolute_path.display().to_string()));
+                startup_output
+                    .reference_files
+                    .push(reference_absolute_path.to_string_lossy().into_owned());
+                references.push(FastaInput::from_path(
+                    reference_absolute_path.display().to_string(),
+                ));
             }
             "--reference-list" => {
                 let value = args.next().ok_or_else(|| {
@@ -201,11 +385,17 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
                 let (absolute_path, validated_paths) = validate_and_read_path_list(&value)?;
                 match fs::exists(&value) {
-                    Ok(true) => eprintln!("reference_list = \"{}\"", absolute_path.display()),
-                    Ok(false) => eprintln!("ERROR: Reference list {} does not exist.", absolute_path.display()),
+                    Ok(true) => {}
+                    Ok(false) => eprintln!(
+                        "ERROR: Reference list {} does not exist.",
+                        absolute_path.display()
+                    ),
                     Err(e) => eprintln!("ERROR: Error loading reference list: {}", e),
                 }
 
+                startup_output
+                    .reference_lists
+                    .push(absolute_path.to_string_lossy().into_owned());
                 references.extend(validated_paths.into_iter().map(FastaInput::from_path));
             }
             "--query" => {
@@ -213,6 +403,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query requires a path")
                 })?;
                 if is_stdin_path(&value) {
+                    startup_output.query_files.push(value);
                     queries.push(FastaInput::from_stdin(None));
                 } else {
                     if stdin_query_name.is_some() {
@@ -223,11 +414,19 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     }
                     let query_absolute_path = path::absolute(&value)?;
                     match fs::exists(&query_absolute_path) {
-                        Ok(true) => eprintln!("query_file = \"{}\"", query_absolute_path.display()),
-                        Ok(false) => eprintln!("ERROR: query_file {} does not exist.", query_absolute_path.display()),
+                        Ok(true) => {}
+                        Ok(false) => eprintln!(
+                            "ERROR: query_file {} does not exist.",
+                            query_absolute_path.display()
+                        ),
                         Err(e) => eprintln!("ERROR: Error loading query: {}", e),
                     }
-                    queries.push(FastaInput::from_path(query_absolute_path.display().to_string()));
+                    startup_output
+                        .query_files
+                        .push(query_absolute_path.to_string_lossy().into_owned());
+                    queries.push(FastaInput::from_path(
+                        query_absolute_path.display().to_string(),
+                    ));
                 }
             }
             "--query-name" => {
@@ -240,6 +439,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--query-name may only be supplied once",
                     ));
                 }
+                startup_output.query_name = Some(value.clone());
                 stdin_query_name = Some(value);
             }
             "--query-list" => {
@@ -248,11 +448,17 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
                 let (absolute_path, validated_paths) = validate_and_read_path_list(&value)?;
                 match fs::exists(&value) {
-                    Ok(true) => eprintln!("query_list = \"{}\"", absolute_path.display()),
-                    Ok(false) => eprintln!("ERROR: Query list {} does not exist.", absolute_path.display()),
+                    Ok(true) => {}
+                    Ok(false) => eprintln!(
+                        "ERROR: Query list {} does not exist.",
+                        absolute_path.display()
+                    ),
                     Err(e) => eprintln!("ERROR: Error loading query list: {}", e),
                 }
 
+                startup_output
+                    .query_lists
+                    .push(absolute_path.to_string_lossy().into_owned());
                 queries.extend(validated_paths.into_iter().map(FastaInput::from_path));
             }
             "--reference-sketch" => {
@@ -280,6 +486,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --kmer-size value {value:?}: {err}"),
                     )
                 })?;
+                user_options.kmer_size = true;
                 validate_kmer_size(kmer_size)?;
             }
             "--window-size" => {
@@ -295,6 +502,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --window-size value {value:?}: {err}"),
                     )
                 })?;
+                user_options.window_size = true;
                 validate_window_size(window_size)?;
             }
             "--fragment-length" => {
@@ -310,6 +518,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --fragment-length value {value:?}: {err}"),
                     )
                 })?;
+                user_options.fragment_length = true;
                 validate_fragment_length(fragment_length)?;
             }
             "--min-identity" => {
@@ -325,6 +534,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --min-identity value {value:?}: {err}"),
                     )
                 })?;
+                user_options.min_identity = true;
                 validate_min_identity(min_identity)?;
             }
             "--mash-confidence" => {
@@ -340,6 +550,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --mash-confidence value {value:?}: {err}"),
                     )
                 })?;
+                user_options.mash_confidence = true;
                 validate_mash_confidence(mash_confidence)?;
             }
             "--max-concurrent-shards" => {
@@ -376,6 +587,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --max-shard-minimizers value {value:?}: {err}"),
                     )
                 })?;
+                user_options.max_shard_minimizers = true;
                 validate_max_shard_minimizers(parsed_max_shard_minimizers)?;
                 max_shard_minimizers = Some(parsed_max_shard_minimizers);
             }
@@ -393,6 +605,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     )
                 })?;
                 index_build_mode = value.parse::<IndexBuildMode>()?;
+                user_options.index_build_mode = true;
             }
             "--out" => {
                 let value = args.next().ok_or_else(|| {
@@ -425,6 +638,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--threads must be at least 1",
                     ));
                 }
+                user_options.threads = true;
             }
             "--max-memory-gb" => {
                 let value = args.next().ok_or_else(|| {
@@ -454,6 +668,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         "--freq-threshold-percent must be between 0 and 100",
                     ));
                 }
+                user_options.freq_threshold_percent = true;
             }
             "--minmer-count" => {
                 let value = args.next().ok_or_else(|| {
@@ -490,6 +705,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     )
                 })?;
                 fragment_stride_was_set = true;
+                user_options.fragment_stride = true;
                 if fragment_stride == 0 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -511,6 +727,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     )
                 })?;
                 min_fragment_length_was_set = true;
+                user_options.min_fragment_length = true;
                 if min_fragment_length == 0 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -531,6 +748,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid {arg} value {value:?}: {err}"),
                     )
                 })?;
+                user_options.split_n_run = true;
             }
             "--verbose" => {
                 verbose = true;
@@ -635,7 +853,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         .unwrap_or_else(|| default_max_shard_minimizers_for_runtime(threads, max_memory_bytes));
     validate_max_shard_minimizers(max_shard_minimizers)?;
 
-    Ok(Some(CliArgs {
+    let cli_args = CliArgs {
         references,
         queries,
         sketch_path,
@@ -660,7 +878,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         max_concurrent_shards,
         max_shard_minimizers,
         index_build_mode,
-    }))
+    };
+    startup_output.emit(&cli_args, &user_options);
+
+    Ok(Some(cli_args))
 }
 
 fn parse_max_memory_gb(value: &str) -> io::Result<u64> {
