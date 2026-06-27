@@ -141,6 +141,10 @@ impl SlidingSketchCounter {
     }
 
     pub(crate) fn insert(&mut self, hash: MinimizerKey) {
+        // Keep this as binary search unless default fragment geometry is re-profiled:
+        // the reverted SIMD scan assumed much smaller coordinate tables than the
+        // 150-300 entry common case and added enough branch-mispredict overhead
+        // in this loop to outweigh the intended lookup savings.
         let index = self
             .hashes
             .binary_search(&hash)

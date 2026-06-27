@@ -169,6 +169,7 @@ pub(crate) fn effective_index_build_mode(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn partition_id_for_key(key: MinimizerKey, partition_count: usize) -> usize {
     debug_assert!(partition_count.is_power_of_two());
     let partition_bits: u32 = partition_count.trailing_zeros();
@@ -400,6 +401,9 @@ pub(crate) struct PartitionWriters {
     pub(crate) buffers: Vec<Vec<PartitionHitRecord>>,
     pub(crate) buffer_record_limit: usize,
     partition_count: usize,
+    /// Precomputed right-shift amount: `MinimizerKey::BITS - partition_count.trailing_zeros()`.
+    /// Avoids recomputing `trailing_zeros()` for every minimizer pushed.
+    partition_shift: u32,
 }
 
 impl PartitionWriters {
@@ -424,12 +428,19 @@ impl PartitionWriters {
             writers.push(BufWriter::new(file));
         }
 
+        let partition_shift = if partition_count <= 1 {
+            0u32
+        } else {
+            MinimizerKey::BITS - partition_count.trailing_zeros()
+        };
+
         Ok(Self {
             files,
             writers,
             buffers: vec![Vec::new(); partition_count],
             buffer_record_limit: buffer_record_limit.max(1),
             partition_count,
+            partition_shift,
         })
     }
 
@@ -441,13 +452,69 @@ impl PartitionWriters {
         &self.files[partition_index].path
     }
 
+    #[allow(dead_code)]
     pub(crate) fn push(&mut self, record: PartitionHitRecord) -> io::Result<()> {
-        let partition_index: usize = partition_id_for_key(record.key, self.partition_count);
+        let partition_index: usize = if self.partition_count <= 1 {
+            0
+        } else {
+            (record.key >> self.partition_shift) as usize
+        };
         let buffer: &mut Vec<PartitionHitRecord> = &mut self.buffers[partition_index];
         buffer.push(record);
 
         if buffer.len() >= self.buffer_record_limit {
             self.flush_partition(partition_index)?;
+        }
+
+        Ok(())
+    }
+
+    /// Push a slice of records using batch SIMD partition ID computation.
+    /// Flush conditions are evaluated after all records are pushed, not after each one.
+    /// This means buffers may transiently exceed `buffer_record_limit` by up to
+    /// `records.len() - 1` entries; call `flush_all` after if exact limit adherence matters.
+    /// For the streaming build, the brief overrun is acceptable since the flush check
+    /// in the loop catches the common case.
+    /// Re-benchmark this path in isolation before retuning or discarding it:
+    /// a prior combined landing was masked by branch-predictor interference from
+    /// unrelated hot-path changes rather than by a problem in batch routing itself.
+    pub(crate) fn push_batch(&mut self, records: &[PartitionHitRecord]) -> io::Result<()> {
+        if self.partition_count <= 1 {
+            self.buffers[0].extend_from_slice(records);
+            if self.buffers[0].len() >= self.buffer_record_limit {
+                self.flush_partition(0)?;
+            }
+            return Ok(());
+        }
+
+        let shift = self.partition_shift;
+        let mut ids = [0usize; 8];
+        let mut i = 0usize;
+
+        // SIMD path: process 8 records at a time.
+        while i + 8 <= records.len() {
+            let chunk: &[PartitionHitRecord; 8] = records[i..i + 8]
+                .try_into()
+                .expect("slice of exactly 8 elements");
+            compute_8_partition_ids(chunk, shift, &mut ids);
+            for k in 0..8 {
+                self.buffers[ids[k]].push(records[i + k]);
+            }
+            i += 8;
+        }
+
+        // Scalar tail.
+        for record in &records[i..] {
+            let pid = (record.key >> shift) as usize;
+            self.buffers[pid].push(*record);
+        }
+
+        // Flush any buffers that crossed the limit.
+        let limit = self.buffer_record_limit;
+        for pid in 0..self.partition_count() {
+            if self.buffers[pid].len() >= limit {
+                self.flush_partition(pid)?;
+            }
         }
 
         Ok(())
@@ -475,14 +542,118 @@ impl PartitionWriters {
     }
 }
 
+/// Compute 8 partition IDs from 8 `PartitionHitRecord` keys simultaneously.
+///
+/// `shift` = `MinimizerKey::BITS - partition_bits`, precomputed in `PartitionWriters::new`.
+///
+/// `PartitionHitRecord` is `{ key: u32, hit: SeedHit { reference_contig_id: u32, position: u32 } }`
+/// = 12 bytes, so keys are stride-3 u32s. They must be manually extracted before loading
+/// into a SIMD register; a gather instruction handles this efficiently on AVX2 targets.
+#[inline]
+fn compute_8_partition_ids(records: &[PartitionHitRecord; 8], shift: u32, out: &mut [usize; 8]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 confirmed above.
+        unsafe { compute_8_ids_avx2(records, shift, out) };
+        return;
+    }
+
+    // Scalar fallback, also the path on non-x86 targets.
+    for (k, record) in records.iter().enumerate() {
+        out[k] = (record.key >> shift) as usize;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn compute_8_ids_avx2(records: &[PartitionHitRecord; 8], shift: u32, out: &mut [usize; 8]) {
+    use core::arch::x86_64::{
+        __m256i, _mm256_i32gather_epi32, _mm256_set1_epi32, _mm256_set_epi32, _mm256_srlv_epi32,
+        _mm256_storeu_si256,
+    };
+
+    // PartitionHitRecord is 12 bytes = 3 x u32. Keys are at byte offsets
+    // 0, 12, 24, 36, 48, 60, 72, 84 from the base of `records`.
+    // _mm256_i32gather_epi32 with scale=1 uses raw byte offsets.
+    let vindex = _mm256_set_epi32(84, 72, 60, 48, 36, 24, 12, 0);
+    let base = records.as_ptr() as *const i32;
+
+    // Gather: reads records[i].key for i in 0..8 in one instruction.
+    let keys = unsafe { _mm256_i32gather_epi32::<1>(base, vindex) };
+
+    // Logical right shift by `shift` bits to extract the partition index.
+    // _mm256_srli_epi32 takes a compile-time-constant immediate in the intrinsic
+    // form; use _mm256_srlv_epi32 for this runtime shift.
+    let shift_vec = _mm256_set1_epi32(shift as i32);
+    let shifted = _mm256_srlv_epi32(keys, shift_vec);
+
+    // Store 8 x u32 results.
+    let mut result = [0u32; 8];
+    unsafe {
+        _mm256_storeu_si256(result.as_mut_ptr() as *mut __m256i, shifted);
+    }
+
+    for k in 0..8 {
+        out[k] = result[k] as usize;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::ani::{
         database_build_parallelism, partition_build_plan, partition_id_for_key,
-        plan_shards_from_minimizer_counts, PartitionBuildPlan, ShardPlan,
-        DEFAULT_PARTITION_TARGET_BYTES, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
+        plan_shards_from_minimizer_counts, PartitionBuildPlan, PartitionHitRecord,
+        PartitionWriters, SeedHit, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES, MAX_PARTITION_COUNT,
+        MIN_PARTITION_COUNT,
     };
     use std::io;
+
+    #[test]
+    fn push_batch_routes_identical_to_sequential_push() -> io::Result<()> {
+        let partition_count = 16usize;
+        let buffer_limit = 1024;
+        let tmp = std::env::temp_dir();
+        let mut sequential = PartitionWriters::new(partition_count, Some(&tmp), buffer_limit)?;
+        let mut batched = PartitionWriters::new(partition_count, Some(&tmp), buffer_limit)?;
+
+        let records: Vec<PartitionHitRecord> = (0u32..200)
+            .map(|i| PartitionHitRecord {
+                key: i.wrapping_mul(0x9E37_79B9),
+                hit: SeedHit {
+                    reference_contig_id: i % 4,
+                    position: i * 7,
+                },
+            })
+            .collect();
+
+        for record in &records {
+            sequential.push(*record)?;
+        }
+        batched.push_batch(&records)?;
+
+        for pid in 0..partition_count {
+            assert_eq!(
+                sequential.buffers[pid], batched.buffers[pid],
+                "partition {pid} differs"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn partition_shift_is_precomputed_correctly() {
+        for &partition_count in &[16usize, 64, 256, 1024, 4096] {
+            let tmp = std::env::temp_dir();
+            let pw = PartitionWriters::new(partition_count, Some(&tmp), 1).unwrap();
+            let shift = pw.partition_shift;
+            for key in [0u32, 1, u32::MAX / 2, u32::MAX - 1, u32::MAX] {
+                let expected = partition_id_for_key(key, partition_count);
+                let actual = (key >> shift) as usize;
+                assert_eq!(actual, expected, "count={partition_count} key={key}");
+            }
+        }
+    }
 
     #[test]
     fn shard_planner_splits_by_minimizer_target() -> io::Result<()> {

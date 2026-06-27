@@ -394,15 +394,20 @@ impl ReferenceSketch {
                                 format!("reference contig id exceeds sketch cache limit: {err}"),
                             )
                         })?;
-                    for minimizer in &reference_minimizers {
-                        partition_writers.push(PartitionHitRecord {
+
+                    // Build the record slice for this contig in one pass, then push as a batch.
+                    // Avoids per-record function call overhead and enables SIMD partition ID computation.
+                    let partition_hit_records: Vec<PartitionHitRecord> = reference_minimizers
+                        .iter()
+                        .map(|minimizer| PartitionHitRecord {
                             key: minimizer.hash,
                             hit: SeedHit {
                                 reference_contig_id: reference_contig_id_u32,
                                 position: minimizer.position,
                             },
-                        })?;
-                    }
+                        })
+                        .collect();
+                    partition_writers.push_batch(&partition_hit_records)?;
 
                     let minimizer_offset: u64 = reference_minimizer_count as u64;
                     let minimizer_count: u32 =
