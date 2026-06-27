@@ -105,7 +105,7 @@ fn collect_query_mappings(
 fn write_results_header(output: &mut dyn Write) -> io::Result<()> {
     writeln!(
         output,
-        "query_file\treference_file\tANI\tshared_fragments\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower"
+        "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower"
     )
 }
 
@@ -249,10 +249,11 @@ fn write_query_outputs(
         let ani: f64 = summary.weighted_identity_sum / summary.shared_bases as f64;
         let shared_fragment_equivalents: f64 = summary.shared_bases as f64 / fragment_length as f64;
         let total_fragment_equivalents: f64 = query_mapped_length as f64 / fragment_length as f64;
+        let aligned_fraction: f64 = shared_fragment_equivalents / total_fragment_equivalents;
         let stats = summary.distribution_stats;
         writeln!(
             output,
-            "{query_path}\t{}\t{ani:.3}\t{shared_fragment_equivalents:.2}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+            "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
             reference_file.path,
             stats.median,
             stats.stddev,

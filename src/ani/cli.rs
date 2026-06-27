@@ -74,8 +74,8 @@ Output:
     query_file           Query genome file path.
     reference_file       Reference genome file path.
     ANI                  Average nucleotide identity (%).
-    shared_fragments     Aligned bases from reciprocal-best fragments / fragment_length.
-    total_fragments      Mappable query bases / fragment_length.
+    AF                   Aligned fraction of query fragments.
+    total_fragments      Mappable query bases / fragment_length (non-integer).
     median_ANI           Median fragment ANI; less sensitive to outliers than the ANI.
     stddev               Standard deviation of fragment ANI.
     ci_95_upper          95% upper confidence interval for ANI
