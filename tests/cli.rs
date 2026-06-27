@@ -100,6 +100,84 @@ assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98
 }
 
 #[test]
+fn quiet_suppresses_startup_summary_from_cli() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            "assets/test-data/Escherichia_coli_str_K12_MG1655.fna",
+            "--query",
+            "assets/test-data/Shigella_flexneri_2a_01.fna",
+            "--threads",
+            "2",
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        output.status.success(),
+        "binary exited with status {:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
+    let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
+assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\n";
+    assert_eq!(stdout, expected);
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(!stderr.contains("FasterANI non-default runtime parameters"));
+    assert!(!stderr.contains("threads = 2"));
+}
+
+#[test]
+fn quiet_suppresses_startup_summary_from_params_file() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("params-quiet");
+    let params_path = temp_dir.join("params.toml");
+    let reference = fixture_path("Escherichia_coli_str_K12_MG1655.fna");
+    let query = fixture_path("Shigella_flexneri_2a_01.fna");
+    fs::write(
+        &params_path,
+        format!(
+            r#"
+reference_files = ["{reference}"]
+query_files = ["{query}"]
+threads = 4
+quiet = true
+"#,
+        ),
+    )
+    .expect("write params file");
+
+    let output = Command::new(exe)
+        .args([
+            "--params-file",
+            params_path.to_str().expect("utf-8 params path"),
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        output.status.success(),
+        "binary exited with status {:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
+    assert!(stdout.contains("\t97.636\t0.807\t1608.00\t"));
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(!stderr.contains("FasterANI non-default runtime parameters"));
+    assert!(!stderr.contains("threads = 4"));
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
 fn params_file_provides_defaults() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
     let temp_dir = temp_test_dir("params-defaults");

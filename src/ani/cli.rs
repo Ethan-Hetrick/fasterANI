@@ -27,6 +27,7 @@ pub(crate) struct CliArgs {
     pub(crate) bgzip: bool,
     pub(crate) emit_header: bool,
     pub(crate) verbose: bool,
+    pub(crate) quiet: bool,
     pub(crate) threads: usize,
     pub(crate) freq_threshold_percent: f64,
     pub(crate) minmer_count: Option<usize>,
@@ -69,6 +70,7 @@ Output:
                                  default: off.
   --mapping-stats <path>       Write a per-fragment mapping-stats TSV (always headered).
   --verbose                    Print PROGRESS/diagnostics to stderr (default: off).
+  --quiet                      Suppress startup parameter summary (default: off).
 
   Results columns (tab-separated):
     query_file           Query genome file path.
@@ -405,6 +407,7 @@ struct ParameterSources {
     bgzip: Option<ParameterSource>,
     header: Option<ParameterSource>,
     verbose: Option<ParameterSource>,
+    quiet: Option<ParameterSource>,
 }
 
 fn push_toml_array(entries: &mut Vec<String>, key: &str, values: &[StartupValue]) {
@@ -724,6 +727,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut bgzip: bool = false;
     let mut emit_header: bool = false;
     let mut verbose: bool = false;
+    let mut quiet: bool = false;
     let mut threads: usize = 1usize;
     let mut freq_threshold_percent: f64 = DEFAULT_FREQ_THRESHOLD_PERCENT;
     let mut minmer_count: Option<usize> = None;
@@ -831,6 +835,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     if let Some(value) = params_file_config.verbose {
         verbose = value;
         sources.verbose = Some(ParameterSource::ParamsFile);
+    }
+    if let Some(value) = params_file_config.quiet {
+        quiet = value;
+        sources.quiet = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.threads {
         threads = value;
@@ -1279,6 +1287,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 verbose = true;
                 sources.verbose = Some(ParameterSource::Cli);
             }
+            "--quiet" => {
+                quiet = true;
+                sources.quiet = Some(ParameterSource::Cli);
+            }
             "--help" | "-h" | "--h" | "help" | "-?" => {
                 eprintln!("{}", usage());
                 return Ok(None);
@@ -1425,6 +1437,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         bgzip,
         emit_header,
         verbose,
+        quiet,
         threads,
         freq_threshold_percent,
         minmer_count,
@@ -1441,7 +1454,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         max_shard_minimizers,
         index_build_mode,
     };
-    startup_output.emit(&cli_args, &sources);
+    if !cli_args.quiet {
+        startup_output.emit(&cli_args, &sources);
+    }
 
     Ok(Some(cli_args))
 }
