@@ -9,7 +9,7 @@ use std::{
 use crate::ani::{
     default_max_shard_minimizers_for_runtime, describe_field_parsing_error, is_stdin_path,
     load_params_file, validate_fragment_length, validate_kmer_size, validate_mash_confidence,
-    validate_max_shard_minimizers, validate_min_identity, validate_window_size, FastaInput,
+    validate_mash_threshold, validate_max_shard_minimizers, validate_window_size, FastaInput,
     IndexBuildMode, ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
     DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE,
     DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
@@ -35,7 +35,7 @@ pub(crate) struct CliArgs {
     pub(crate) fragment_length: u32,
     pub(crate) fragment_stride: u32,
     pub(crate) min_fragment_length: u32,
-    pub(crate) min_identity: f64,
+    pub(crate) mash_threshold: f64,
     pub(crate) mash_confidence: f64,
     /// Minimum run-length of ambiguous `N` bases that splits a contig; `0` disables.
     pub(crate) split_n_run: usize,
@@ -93,12 +93,11 @@ Fragmenting (how each query contig is cut into fragments):
                                   bases; 0 disables splitting (alias: --split-n; default 0).
 
 Fragment mapping (thresholds applied to each individual fragment alignment):
-  --min-identity <percent>      Minimum identity of a single query-fragment-to-reference
-                                  alignment for that fragment to count toward ANI;
-                                  0..100 (default 80). (Not a threshold on the final ANI.)
-  --mash-confidence <fraction>  Confidence level for the Mash-distance prefilter that
-                                  selects which reference regions each fragment is scored
-                                  against; higher = stricter; 0..1 (default 0.9).
+  --mash-threshold <0..100>     Minimum Mash identity for a query fragment to count towards
+                                  the final ANI. (default = 80)
+  --mash-confidence <0..1>      Minimim statistical confidence for a query fragment to count
+                                  towards the final ANI (default = 0.9).
+                                  Note: 0.9 = p-value 0.05 (lower confidence bound)
 
   Per genome pair, fasterANI keeps only reciprocal-best fragment mappings and reports
   ANI as the length-weighted mean of those retained fragments' identities.
@@ -298,12 +297,12 @@ impl RuntimeStartupOutput {
                 sources.min_fragment_length,
             );
         }
-        if sources.min_identity.is_some() && args.min_identity != DEFAULT_MIN_PERCENT_IDENTITY {
+        if sources.mash_threshold.is_some() && args.mash_threshold != DEFAULT_MIN_PERCENT_IDENTITY {
             push_toml_number(
                 &mut entries,
-                "min_identity",
-                args.min_identity,
-                sources.min_identity,
+                "mash_threshold",
+                args.mash_threshold,
+                sources.mash_threshold,
             );
         }
         if sources.mash_confidence.is_some() && args.mash_confidence != DEFAULT_MASH_CONFIDENCE {
@@ -382,7 +381,7 @@ struct ParameterSources {
     fragment_length: Option<ParameterSource>,
     fragment_stride: Option<ParameterSource>,
     min_fragment_length: Option<ParameterSource>,
-    min_identity: Option<ParameterSource>,
+    mash_threshold: Option<ParameterSource>,
     mash_confidence: Option<ParameterSource>,
     split_n_run: Option<ParameterSource>,
     max_memory_gb: Option<ParameterSource>,
@@ -725,7 +724,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut fragment_stride_was_set: bool = false;
     let mut min_fragment_length: u32 = DEFAULT_MIN_FRAGMENT_LENGTH;
     let mut min_fragment_length_was_set: bool = false;
-    let mut min_identity: f64 = DEFAULT_MIN_PERCENT_IDENTITY;
+    let mut mash_threshold: f64 = DEFAULT_MIN_PERCENT_IDENTITY;
     let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
     let mut max_memory_bytes: Option<u64> = None;
@@ -857,9 +856,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         min_fragment_length_was_set = true;
         sources.min_fragment_length = Some(ParameterSource::ParamsFile);
     }
-    if let Some(value) = params_file_config.min_identity {
-        min_identity = value;
-        sources.min_identity = Some(ParameterSource::ParamsFile);
+    if let Some(value) = params_file_config.mash_threshold {
+        mash_threshold = value;
+        sources.mash_threshold = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.mash_confidence {
         mash_confidence = value;
@@ -1031,21 +1030,21 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 sources.fragment_length = Some(ParameterSource::Cli);
                 validate_fragment_length(fragment_length)?;
             }
-            "--min-identity" => {
+            "--mash-threshold" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "--min-identity requires a value",
+                        "--mash-threshold requires a value",
                     )
                 })?;
-                min_identity = value.parse::<f64>().map_err(|err| {
+                mash_threshold = value.parse::<f64>().map_err(|err| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("invalid --min-identity value {value:?}: {err}"),
+                        format!("invalid --mash-threshold value {value:?}: {err}"),
                     )
                 })?;
-                sources.min_identity = Some(ParameterSource::Cli);
-                validate_min_identity(min_identity)?;
+                sources.mash_threshold = Some(ParameterSource::Cli);
+                validate_mash_threshold(mash_threshold)?;
             }
             "--mash-confidence" => {
                 let value = args.next().ok_or_else(|| {
@@ -1375,7 +1374,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     validate_kmer_size(kmer_size)?;
     validate_window_size(window_size)?;
     validate_fragment_length(fragment_length)?;
-    validate_min_identity(min_identity)?;
+    validate_mash_threshold(mash_threshold)?;
     validate_mash_confidence(mash_confidence)?;
     if fragment_stride == 0 {
         return Err(io::Error::new(
@@ -1424,7 +1423,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         fragment_length,
         fragment_stride,
         min_fragment_length,
-        min_identity,
+        mash_threshold,
         mash_confidence,
         split_n_run,
         max_memory_bytes,

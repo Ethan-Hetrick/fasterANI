@@ -65,9 +65,9 @@ pub(crate) fn validate_fragment_length(fragment_length: u32) -> Result<(), AniEr
     Ok(())
 }
 
-pub(crate) fn validate_min_identity(min_identity: f64) -> Result<(), AniError> {
-    if !min_identity.is_finite() || !(0.0..=100.0).contains(&min_identity) {
-        return Err(AniError::MinIdentityOutOfRange);
+pub(crate) fn validate_mash_threshold(mash_threshold: f64) -> Result<(), AniError> {
+    if !mash_threshold.is_finite() || !(0.0..=100.0).contains(&mash_threshold) {
+        return Err(AniError::MashThresholdOutOfRange);
     }
 
     Ok(())

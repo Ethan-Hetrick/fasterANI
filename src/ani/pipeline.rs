@@ -276,7 +276,7 @@ fn map_query_against_reference_sketch(
         query_file,
         args.kmer_size,
         args.window_size,
-        args.min_identity,
+        args.mash_threshold,
         args.mash_confidence,
         args.threads,
         frequency_threshold,
@@ -334,13 +334,13 @@ pub fn run() -> io::Result<()> {
         emit_progress(
             "parameters",
             &format!(
-                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmin_identity={:.6}\tmash_confidence={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
+                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmash_threshold={:.6}\tmash_confidence={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
                 args.kmer_size,
                 args.window_size,
                 args.fragment_length,
                 args.fragment_stride,
                 args.min_fragment_length,
-                args.min_identity,
+                args.mash_threshold,
                 args.mash_confidence,
                 args.minmer_count
                     .map(|count| count.to_string())
@@ -610,7 +610,7 @@ pub fn run() -> io::Result<()> {
                                 &query_file,
                                 args.kmer_size,
                                 args.window_size,
-                                args.min_identity,
+                                args.mash_threshold,
                                 args.mash_confidence,
                                 mapping_threads_per_shard,
                                 frequency_threshold,

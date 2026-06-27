@@ -2,11 +2,11 @@
 set -euo pipefail
 
 BINARY=./target/release/fasterANI
-SKETCH=~/TESTING/gtdb_genomes_reps_r207-5K-new
-GENOME_LIST=~/scratch/gtdb_genomes_reps_r207/genome-list-5K.txt
+SKETCH=~/TESTING/gtdb_genomes_reps_r207-fulldb
+GENOME_LIST=~/scratch/gtdb_genomes_reps_r207/genome-list.txt
 QUERY=assets/test-data/Escherichia_coli_str_K12_MG1655.fna
 TMP=~/scratch/tmp/fasterANI
-BUILD_THREADS=${BUILD_THREADS:-8}
+BUILD_THREADS=50
 RESULTS_DIR=bench_$(date +%Y%m%d_%H%M%S)
 REPS=${REPS:-1}
 
@@ -107,7 +107,7 @@ run_bench() {
 
 run_reference_build
 
-for THREADS in 1 2 4 8; do
+for THREADS in 1 8 16 32 50; do
     for REP in $(seq 1 "$REPS"); do
         LOG="$RESULTS_DIR/${THREADS}t_1s_rep${REP}"
 

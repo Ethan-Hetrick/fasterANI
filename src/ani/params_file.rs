@@ -15,7 +15,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) fragment_length: Option<u32>,
     pub(crate) fragment_stride: Option<u32>,
     pub(crate) min_fragment_length: Option<u32>,
-    pub(crate) min_identity: Option<f64>,
+    pub(crate) mash_threshold: Option<f64>,
     pub(crate) mash_confidence: Option<f64>,
     pub(crate) split_n_run: Option<usize>,
     pub(crate) max_memory_gb: Option<f64>,
@@ -101,6 +101,7 @@ mod tests {
             &path,
             r#"
 threads = 4
+mash_threshold = 82.5
 mash_confidence = 0.79
 reference_files = ["ref.fa"]
 "#,
@@ -109,6 +110,7 @@ reference_files = ["ref.fa"]
 
         let config = load_params_file(&path).expect("load params file");
         assert_eq!(config.threads, Some(4));
+        assert_eq!(config.mash_threshold, Some(82.5));
         assert_eq!(config.mash_confidence, Some(0.79));
         assert_eq!(config.reference_files, Some(vec!["ref.fa".to_owned()]));
 
