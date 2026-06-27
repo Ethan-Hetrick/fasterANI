@@ -51,24 +51,24 @@ fn usage() -> &'static str {
 
 Inputs:
   --params-file <path>         Load runtime parameters from a TOML file.
-                                Values in the file override defaults; CLI arguments override
-                                  file values. Relative paths in the file are resolved relative
-                                  to the TOML file's directory.
-  --reference <path>            Reference FASTA (optionally gzip-compressed).
-  --reference-list <path>       File of reference FASTA paths, one per line.
-  --reference-sketch <prefix>   Build/reuse an on-disk reference sketch at this prefix.
-                                Query inputs optional (build-only when omitted).
-  --query <path>                Query FASTA (repeatable). Use `-` to read one query from
-                                  stdin (optionally gzip-compressed).
-  --query-list <path>           File of query FASTA paths, one per line.
-  --query-name <label>          Display/path label for a stdin query (with `--query -`).
+                                 Values in the file override defaults; CLI arguments override
+                                 file values. Relative paths in the file are resolved relative
+                                 to the TOML file's directory.
+  --reference <path>           Reference FASTA (optionally gzip-compressed).
+  --reference-list <path>      File of reference FASTA paths, one per line.
+  --reference-sketch <prefix>  Build/reuse an on-disk reference sketch at this prefix.
+                                 Query inputs optional (build-only when omitted).
+  --query <path>               Query FASTA (repeatable). Use `-` to read one query from
+                                 stdin (optionally gzip-compressed).
+  --query-list <path>          File of query FASTA paths, one per line.
+  --query-name <label>         Display/path label for a stdin query (with `--query -`).
 
 Output:
-  --out <path>                  Write results TSV here (default: stdout).
-  --header                      Prepend a column-name header row to the results TSV
-                                  (default: off, for FastANI/script compatibility).
-  --mapping-stats <path>        Write a per-fragment mapping-stats TSV (always headered).
-  --verbose                     Print PROGRESS/diagnostics to stderr (default: off).
+  --out <path>                 Write results TSV here (default: stdout).
+  --header                     Prepend a column-name header row to the results TSV
+                                 default: off.
+  --mapping-stats <path>       Write a per-fragment mapping-stats TSV (always headered).
+  --verbose                    Print PROGRESS/diagnostics to stderr (default: off).
 
   Results columns (tab-separated):
     query_file  reference_file  ani  shared_fragment_equivalents  total_fragment_equivalents
@@ -76,45 +76,47 @@ Output:
   (aligned bases / fragment-length), so they may be non-integer.
 
 Seeding (minimizer sketch; applies to both references and queries):
-  --kmer-size <n>               K-mer size for minimizers (default 16).
-  --window-size <n>             Minimizer window size (default 24).
-  --minmer-count <n>            Keep only the n smallest-hash minimizers ('minmers') per query
-                                  fragment for candidate scoring (default behavior uses all).
-  --freq-threshold-percent <p>  Ignore reference minimizers occurring in more than p%
-                                  of reference positions; 0..100, 0 disables (default 0).
+  --kmer-size <n>              K-mer size for minimizers (default 16).
+  --window-size <n>            Minimizer window size (default 24).
+  --minmer-count <n>           Keep only the n smallest-hash minimizers ('minmers') per query
+                                 fragment for candidate scoring (default behavior uses all).
+  --max-reference-frequency <0..100>
+                               Ignore reference minimizers occurring in more than this
+                                 percent of reference positions; filters out frequent,
+                                 uninformative k-mers (default 0).
 
 Fragmenting (how each query contig is cut into fragments):
-  --fragment-length <bp>        Query fragment length (default 3000).
-  --fragment-stride <bp>        Step between fragment starts; <= fragment-length
-                                  (default: equal to fragment-length, i.e. non-overlapping).
-  --min-fragment-length <bp>    Keep trailing fragments at least this long
-                                  (alias: --min-fraglen; default: fragment-length).
-  --split-N <bp>                Split contigs at runs of >= this many ambiguous (N)
-                                  bases; 0 disables splitting (alias: --split-n; default 0).
+  --fragment-length <bp>       Query fragment length (default 3000).
+  --fragment-stride <bp>       Step between fragment starts; <= fragment-length
+                                 default: equal to fragment-length, i.e. non-overlapping.
+  --min-fragment-length <bp>   Keep trailing fragments at least this long
+                                 alias: --min-fraglen; default: fragment-length.
+  --split-N <bp>               Split contigs at runs of >= this many ambiguous (N)
+                               bases; 0 disables splitting (alias: --split-n; default 0).
 
 Fragment mapping (thresholds applied to each individual fragment alignment):
-  --mash-threshold <0..100>     Minimum Mash identity for a query fragment to count towards
-                                  the final ANI. (default = 80)
-  --mash-confidence <0..1>      Minimim statistical confidence for a query fragment to count
-                                  towards the final ANI (default = 0.9).
-                                  Note: 0.9 = p-value 0.05 (lower confidence bound)
+  --mash-threshold <0..100>    Minimum Mash identity for a query fragment to count towards
+                                 the final ANI (default 80).
+  --mash-confidence <0..1>     Minimum statistical confidence for a query fragment to count
+                                 towards the final ANI (default 0.9).
+                                 Note: 0.9 = p-value 0.05 (lower confidence bound).
 
   Per genome pair, fasterANI keeps only reciprocal-best fragment mappings and reports
-  ANI as the length-weighted mean of those retained fragments' identities.
+    ANI as the length-weighted mean of those retained fragments' identities.
 
 Sketch database / sharding:
-  --bgzip                       Enable if reference sketch input is bgzip-compressed.
-  --max-shard-minimizers <n>    Maximum estimated reference minimizers per shard
-                                  (default is 500_000_000, producing ~10 GiB shards).
-  --max-concurrent-shards <n>    Maximum number of shards to query concurrently
-  --index-build-mode <mode>     auto | hash | partitioned (default auto).
+  --bgzip                      Enable if reference sketch input is bgzip-compressed.
+  --max-shard-minimizers <n>   Maximum estimated reference minimizers per shard
+                                 default: 500_000_000, producing ~10 GiB shards.
+  --max-concurrent-shards <n>  Maximum number of shards to query concurrently.
+  --index-build-mode <mode>    auto | hash | partitioned (default auto).
 
 Resources:
-  --threads <n>                 Worker threads, >= 1 (default 1).
-  --max-memory-gb <gb>          Soft memory ceiling in GB (default: unlimited).
-  --tmp <dir>                   Directory for temporary shard files.
-  -h, --help                    Show help.
-  -v, --version                 Show version."
+  --threads <n>                Worker threads, >= 1 (default 1).
+  --max-memory-gb <gb>         Soft memory ceiling in GB (default: unlimited).
+  --tmp <dir>                  Directory for temporary shard files.
+  -h, --help                   Show help.
+  -v, --version                Show version."
 }
 
 fn validate_and_read_path_list_from_base(
