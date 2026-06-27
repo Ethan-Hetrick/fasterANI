@@ -9,9 +9,9 @@ use rayon::prelude::*;
 
 use crate::ani::{
     estimate_relaxed_minimum_shared_minimizers, query_fragment_ranges, query_fragment_sketch,
-    split_sequence_ranges, AniComputation, AniSummary, MappingMetrics, MappingOutput,
-    MappingResult, MappingResultKey, MappingScratch, QueryFile, QueryFragment, QueryFragmentSketch,
-    ReferenceMinimizer, ReferenceSketch,
+    split_sequence_ranges, AniComputation, AniDistributionStats, AniSummary, MappingMetrics,
+    MappingOutput, MappingResult, MappingResultKey, MappingScratch, QueryFile, QueryFragment,
+    QueryFragmentSketch, ReferenceMinimizer, ReferenceSketch,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{MinimizerKey, QueryMemoryEstimate};
@@ -428,6 +428,9 @@ pub(crate) fn final_ani_computation(
     let mut summaries: Vec<AniSummary> = (0..reference_file_count)
         .map(|_| AniSummary::default())
         .collect::<Vec<_>>();
+    let mut fragment_identities: Vec<Vec<f64>> = (0..reference_file_count)
+        .map(|_| Vec::new())
+        .collect::<Vec<_>>();
     let mut reciprocal_best_keys: HashSet<MappingResultKey> = HashSet::new();
 
     for mapping in summary_mappings {
@@ -437,6 +440,13 @@ pub(crate) fn final_ani_computation(
         summary.shared_bases += u64::from(mapping.query_fragment_length);
         summary.weighted_identity_sum +=
             mapping.identity * f64::from(mapping.query_fragment_length);
+        fragment_identities[mapping.reference_file_id].push(mapping.identity);
+    }
+
+    for (summary, identities) in summaries.iter_mut().zip(&fragment_identities) {
+        if !identities.is_empty() {
+            summary.distribution_stats = compute_distribution_stats(identities);
+        }
     }
 
     AniComputation {
@@ -485,4 +495,95 @@ fn ordered_float(value: f64) -> u64 {
 
 fn reference_position_bin(position: u32, fragment_length: u32) -> u32 {
     position / fragment_length.saturating_sub(20).max(1)
+}
+
+pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDistributionStats {
+    let count: usize = fragment_identities.len();
+    if count == 0 {
+        return AniDistributionStats::default();
+    }
+
+    let mut sorted_identities: Vec<f64> = fragment_identities.to_vec();
+    sorted_identities.sort_by(f64::total_cmp);
+
+    let median: f64 = if count % 2 == 1 {
+        sorted_identities[count / 2]
+    } else {
+        (sorted_identities[(count / 2) - 1] + sorted_identities[count / 2]) / 2.0
+    };
+
+    let mean: f64 = fragment_identities.iter().sum::<f64>() / count as f64;
+    if count == 1 {
+        return AniDistributionStats {
+            median,
+            stddev: f64::NAN,
+            ci_95_lower: mean,
+            ci_95_upper: mean,
+        };
+    }
+
+    let variance: f64 = fragment_identities
+        .iter()
+        .map(|identity| {
+            let delta: f64 = identity - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / (count - 1) as f64;
+    let stddev: f64 = variance.sqrt();
+    let standard_error: f64 = stddev / (count as f64).sqrt();
+    let ci_delta: f64 = t_critical_95(count - 1) * standard_error;
+
+    AniDistributionStats {
+        median,
+        stddev,
+        ci_95_lower: mean - ci_delta,
+        ci_95_upper: mean + ci_delta,
+    }
+}
+
+fn t_critical_95(degrees_of_freedom: usize) -> f64 {
+    const T_CRITICAL_95: [f64; 30] = [
+        12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160,
+        2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056,
+        2.052, 2.048, 2.045, 2.042,
+    ];
+
+    T_CRITICAL_95
+        .get(degrees_of_freedom.saturating_sub(1))
+        .copied()
+        .unwrap_or(1.96)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_distribution_stats;
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn distribution_stats_compute_median_for_odd_count() {
+        let stats = compute_distribution_stats(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+
+        assert_close(stats.median, 3.0);
+    }
+
+    #[test]
+    fn distribution_stats_compute_median_for_even_count() {
+        let stats = compute_distribution_stats(&[1.0, 2.0, 3.0, 4.0]);
+
+        assert_close(stats.median, 2.5);
+    }
+
+    #[test]
+    fn distribution_stats_compute_sample_stddev() {
+        let stats = compute_distribution_stats(&[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]);
+
+        assert_close(stats.stddev, 2.138_089_935_299_395);
+    }
 }

@@ -85,6 +85,27 @@ pub(crate) struct AniSummary {
     pub(crate) shared_fragments: usize,
     pub(crate) shared_bases: u64,
     pub(crate) weighted_identity_sum: f64,
+    pub(crate) distribution_stats: AniDistributionStats,
+}
+
+/// Distribution statistics for retained fragment ANI values.
+#[derive(Clone, Copy)]
+pub struct AniDistributionStats {
+    pub median: f64,
+    pub stddev: f64,
+    pub ci_95_lower: f64,
+    pub ci_95_upper: f64,
+}
+
+impl Default for AniDistributionStats {
+    fn default() -> Self {
+        Self {
+            median: f64::NAN,
+            stddev: f64::NAN,
+            ci_95_lower: f64::NAN,
+            ci_95_upper: f64::NAN,
+        }
+    }
 }
 
 /// Final per-reference summaries plus the exact mappings that contributed to them.

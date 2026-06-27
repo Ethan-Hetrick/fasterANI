@@ -71,9 +71,17 @@ Output:
   --verbose                    Print PROGRESS/diagnostics to stderr (default: off).
 
   Results columns (tab-separated):
-    query_file  reference_file  ani  shared_fragment_equivalents  total_fragment_equivalents
-  where ANI is a percent, and the last two are fractional fragment counts
-  (aligned bases / fragment-length), so they may be non-integer.
+    query_file           Query genome file path.
+    reference_file       Reference genome file path.
+    ANI                  Average nucleotide identity (%).
+    shared_fragments     Aligned bases from reciprocal-best fragments / fragment_length.
+    total_fragments      Mappable query bases / fragment_length.
+    median_ANI           Median fragment ANI; less sensitive to outliers than the ANI.
+    stddev               Standard deviation of fragment ANI.
+    ci_95_upper          95% upper confidence interval for ANI
+    ci_95_lower          95% lower confidence interval for ANI
+
+  Note: Fragment counts may be fractional.
 
 Seeding (minimizer sketch; applies to both references and queries):
   --kmer-size <n>              K-mer size for minimizers (default 16).
