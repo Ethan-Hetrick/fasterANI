@@ -50,7 +50,7 @@ fn cli_emits_expected_ani_for_test_data() {
 
     let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
     let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
-assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\n";
+assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\t0.000e0****\t1.000e0\n";
     assert_eq!(stdout, expected);
 }
 
@@ -95,7 +95,7 @@ fn cli_accepts_streamed_query_from_stdin() {
 
     let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
     let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
-assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\n";
+assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\t0.000e0****\t1.000e0\n";
     assert_eq!(stdout, expected);
 }
 
@@ -124,7 +124,7 @@ fn quiet_suppresses_startup_summary_from_cli() {
 
     let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
     let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
-assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\n";
+assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\t0.000e0****\t1.000e0\n";
     assert_eq!(stdout, expected);
 
     let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");

@@ -8,10 +8,11 @@ use noodles::fasta;
 use rayon::prelude::*;
 
 use crate::ani::{
-    estimate_relaxed_minimum_shared_minimizers, query_fragment_ranges, query_fragment_sketch,
-    split_sequence_ranges, AniComputation, AniDistributionStats, AniSummary, MappingMetrics,
-    MappingOutput, MappingResult, MappingResultKey, MappingScratch, QueryFile, QueryFragment,
-    QueryFragmentSketch, ReferenceMinimizer, ReferenceSketch,
+    binomial_survival, estimate_relaxed_minimum_shared_minimizers, query_fragment_ranges,
+    query_fragment_sketch, split_sequence_ranges, t_cdf_approx, AniComputation,
+    AniDistributionStats, AniSummary, MappingMetrics, MappingOutput, MappingResult,
+    MappingResultKey, MappingScratch, QueryFile, QueryFragment, QueryFragmentSketch,
+    ReferenceMinimizer, ReferenceSketch,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{MinimizerKey, QueryMemoryEstimate};
@@ -519,6 +520,8 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
             stddev: f64::NAN,
             ci_95_lower: mean,
             ci_95_upper: mean,
+            p99: f64::NAN,
+            p80: f64::NAN,
         };
     }
 
@@ -539,7 +542,31 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
         stddev,
         ci_95_lower: mean - ci_delta,
         ci_95_upper: mean + ci_delta,
+        p99: high_ani_binomial_p_value(fragment_identities, mean, stddev, 99.0),
+        p80: high_ani_binomial_p_value(fragment_identities, mean, stddev, 80.0),
     }
+}
+
+fn high_ani_binomial_p_value(
+    fragment_identities: &[f64],
+    mean: f64,
+    stddev: f64,
+    threshold: f64,
+) -> f64 {
+    if !stddev.is_finite() || stddev <= 0.0 || fragment_identities.len() < 2 {
+        return f64::NAN;
+    }
+
+    let observed_at_or_above: usize = fragment_identities
+        .iter()
+        .filter(|identity| **identity >= threshold)
+        .count();
+    let count: usize = fragment_identities.len();
+    let standard_error: f64 = stddev / (count as f64).sqrt();
+    let t_statistic: f64 = (threshold - mean) / standard_error;
+    let tail_probability: f64 = 1.0 - t_cdf_approx(t_statistic, (count - 1) as f64);
+
+    binomial_survival(observed_at_or_above, tail_probability, count)
 }
 
 fn t_critical_95(degrees_of_freedom: usize) -> f64 {
@@ -585,5 +612,19 @@ mod tests {
         let stats = compute_distribution_stats(&[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]);
 
         assert_close(stats.stddev, 2.138_089_935_299_395);
+    }
+
+    #[test]
+    fn distribution_stats_flag_many_high_ani_fragments() {
+        let mut identities: Vec<f64> = vec![90.0; 900];
+        identities.extend(vec![99.0; 100]);
+
+        let stats = compute_distribution_stats(&identities);
+
+        assert!(
+            stats.p99 < 0.05,
+            "expected significant P99, got {}",
+            stats.p99
+        );
     }
 }

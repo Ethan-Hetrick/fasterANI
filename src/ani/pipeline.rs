@@ -105,7 +105,7 @@ fn collect_query_mappings(
 fn write_results_header(output: &mut dyn Write) -> io::Result<()> {
     writeln!(
         output,
-        "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower"
+        "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tP99\tP80"
     )
 }
 
@@ -114,6 +114,20 @@ fn write_mapping_stats_header(output: &mut dyn Write) -> io::Result<()> {
         output,
         "query_file\treference_file\tquery_contig\treference_contig\tquery_fragment_id\tquery_start\tquery_end\treference_start\treference_end\tidentity\tquery_minimizer_count\treference_minimizer_count\tshared_minimizers\tunion_minimizers\tjaccard\tfragment_length\tis_reciprocal_best"
     )
+}
+
+fn significance_stars(p_value: f64) -> &'static str {
+    if p_value < 0.0001 {
+        "****"
+    } else if p_value < 0.001 {
+        "***"
+    } else if p_value < 0.01 {
+        "**"
+    } else if p_value < 0.05 {
+        "*"
+    } else {
+        ""
+    }
 }
 
 fn write_mapping_stats(
@@ -253,12 +267,16 @@ fn write_query_outputs(
         let stats = summary.distribution_stats;
         writeln!(
             output,
-            "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+            "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3e}{}\t{:.3e}{}",
             reference_file.path,
             stats.median,
             stats.stddev,
             stats.ci_95_upper,
             stats.ci_95_lower,
+            stats.p99,
+            significance_stars(stats.p99),
+            stats.p80,
+            significance_stars(stats.p80),
         )?;
         emitted_pairs += 1;
     }

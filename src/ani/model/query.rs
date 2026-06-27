@@ -95,6 +95,8 @@ pub struct AniDistributionStats {
     pub stddev: f64,
     pub ci_95_lower: f64,
     pub ci_95_upper: f64,
+    pub p99: f64,
+    pub p80: f64,
 }
 
 impl Default for AniDistributionStats {
@@ -104,6 +106,8 @@ impl Default for AniDistributionStats {
             stddev: f64::NAN,
             ci_95_lower: f64::NAN,
             ci_95_upper: f64::NAN,
+            p99: f64::NAN,
+            p80: f64::NAN,
         }
     }
 }
