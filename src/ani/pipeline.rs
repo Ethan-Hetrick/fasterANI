@@ -6,12 +6,12 @@ use std::{
     collections::HashSet,
     fs, io,
     io::{BufWriter, Write},
-    sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    sync::mpsc,
+    thread,
     time::Instant,
 };
 
 use noodles::fasta;
-use rayon::prelude::*;
 
 use crate::ani::{
     check_memory_limit, emit_progress, fastani_compatible_fragment_mode, final_ani_computation,
@@ -47,18 +47,10 @@ struct RawQueryMappingStats {
     pub(crate) metrics: MappingMetrics,
 }
 
-struct ShardQueryResult {
+struct LoadedShard {
     pub(crate) shard_index: usize,
-    pub(crate) reference_files: Vec<ReferenceFile>,
-    pub(crate) reference_contig_names: Option<Vec<ReferenceContigName>>,
-    pub(crate) mapping_results: Vec<MappingResult>,
-    pub(crate) _load_elapsed: std::time::Duration,
-    pub(crate) mapping_elapsed: std::time::Duration,
-    pub(crate) mapping_count: usize,
-    #[cfg(debug_assertions)]
-    pub(crate) max_mapping_result_bytes: usize,
-    #[cfg(debug_assertions)]
-    pub(crate) metrics: MappingMetrics,
+    pub(crate) shard_offset: usize,
+    pub(crate) sketch: ReferenceSketch,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -588,10 +580,11 @@ pub fn run() -> io::Result<()> {
                         manifest
                             .shards
                             .iter()
+                            .cloned()
                             .filter(|shard| filter.contains(&shard.shard_index))
                             .collect()
                     }
-                    None => manifest.shards.iter().collect(),
+                    None => manifest.shards.clone(),
                 };
                 let mut query_reference_files: Vec<ReferenceFile> =
                     Vec::with_capacity(active_shards.iter().map(|s| s.reference_count).sum());
@@ -602,14 +595,6 @@ pub fn run() -> io::Result<()> {
 
                 let mut query_mapping_results: Vec<MappingResult> =
                     Vec::with_capacity(active_shards.iter().map(|s| s.reference_contigs * 2).sum());
-
-                let shard_query_parallelism: usize = args
-                    .threads
-                    .max(1)
-                    .min(args.max_concurrent_shards.unwrap_or(1))
-                    .min(active_shards.len().max(1));
-                let mapping_threads_per_shard: usize =
-                    args.threads.max(1).div_ceil(shard_query_parallelism.max(1));
 
                 let mut reference_file_offsets: Vec<usize> =
                     Vec::with_capacity(active_shards.len());
@@ -624,138 +609,122 @@ pub fn run() -> io::Result<()> {
                     next_reference_contig_offset += shard.reference_contigs;
                 }
 
-                let completed_shard_queries: AtomicUsize = AtomicUsize::new(0);
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(shard_query_parallelism)
-                    .build()
-                    .map_err(|err| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("failed to initialize sharded query thread pool: {err}"),
+                let (tx, rx) = mpsc::sync_channel::<io::Result<LoadedShard>>(1);
+                let loader_active_shards = active_shards.clone();
+                let loader_prefix = prefix.clone();
+                let loader_tmp_dir = args.tmp_dir.clone();
+                let loader_params = SketchParams {
+                    kmer_size: args.kmer_size,
+                    window_size: args.window_size,
+                    fragment_length: args.fragment_length,
+                    min_fragment_length: args.min_fragment_length,
+                    split_n_run: args.split_n_run,
+                };
+                let active_shard_count = active_shards.len();
+                let loader_handle = thread::spawn(move || {
+                    for (shard_offset, shard) in loader_active_shards.iter().enumerate() {
+                        if progress_enabled {
+                            emit_progress(
+                                "shard_load",
+                                &format!(
+                                    "event=start\tquery_done={query_index}\tshard={}\tshards_total={}\tfilename={}\tloader=prefetch",
+                                    shard.shard_index,
+                                    active_shard_count,
+                                    shard.filename
+                                ),
+                                total_start,
+                            );
+                        }
+                        let load_result = ReferenceSketch::load(
+                            &shard_entry_path(&loader_prefix, shard),
+                            loader_params,
+                            mapping_stats_requested,
+                            loader_tmp_dir.as_deref(),
+                            runtime_options,
                         )
-                    })?;
-
-                let mut shard_results: Vec<ShardQueryResult> = pool.install(|| {
-                    active_shards
-                        .par_iter()
-                        .enumerate()
-                        .map(|(shard_offset, shard)| {
-                            if progress_enabled {
-                                emit_progress(
-                                    "shard_load",
-                                    &format!(
-                                        "event=start\tquery_done={query_index}\tshard={}\tshards_total={}\tfilename={}\tshard_query_parallelism={shard_query_parallelism}\tmapping_threads_per_shard={mapping_threads_per_shard}",
-                                        shard.shard_index,
-                                        active_shards.len(),
-                                        shard.filename
-                                    ),
-                                    total_start,
-                                );
-                            }
-                            let shard_load_start: Instant = Instant::now();
-                            let shard_sketch: ReferenceSketch = ReferenceSketch::load(
-                                &shard_entry_path(prefix, shard),
-                                SketchParams {
-                                    kmer_size: args.kmer_size,
-                                    window_size: args.window_size,
-                                    fragment_length: args.fragment_length,
-                                    min_fragment_length: args.min_fragment_length,
-                                    split_n_run: args.split_n_run,
-                                },
-                                mapping_stats_requested,
-                                args.tmp_dir.as_deref(),
-                                runtime_options,
-                            )?;
-                            let load_elapsed: std::time::Duration = shard_load_start.elapsed();
-                            let frequency_threshold: usize = shard_sketch
-                                .index
-                                .frequency_threshold(args.freq_threshold_percent);
-
-                            let mut raw_stats: RawQueryMappingStats = collect_query_mappings(
-                                &shard_sketch,
-                                &query_file,
-                                args.kmer_size,
-                                args.window_size,
-                                args.mash_threshold,
-                                args.mash_confidence,
-                                mapping_threads_per_shard,
-                                frequency_threshold,
-                                performance_metrics_enabled,
-                            )?;
-                            let shard_mapping_count: usize = raw_stats.mapping_results.len();
-                            let reference_file_offset: usize = reference_file_offsets[shard_offset];
-                            let reference_contig_offset: usize = reference_contig_offsets[shard_offset];
-
-                            for mapping in &mut raw_stats.mapping_results {
-                                mapping.reference_file_id += reference_file_offset;
-                                mapping.reference_contig_id += reference_contig_offset;
-                            }
-
-                            let reference_files: Vec<ReferenceFile> = shard_sketch.files;
-                            let reference_contig_names: Option<Vec<ReferenceContigName>> = shard_sketch.contig_names;
-                            let shards_done: usize = completed_shard_queries.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-
-                            if progress_enabled {
-                                emit_progress(
-                                    "shard_load",
-                                    &format!(
-                                        "event=complete\tquery_done={query_index}\tshard={}\tshards_done={shards_done}\tshards_total={}\tmappings={}",
-                                        shard.shard_index,
-                                        active_shards.len(),
-                                        shard_mapping_count
-                                    ),
-                                    total_start,
-                                );
-                            }
-                            check_memory_limit("after shard query", runtime_options)?;
-
-                            Ok(ShardQueryResult {
+                        .map(|sketch| {
+                            sketch.prefetch_sequential();
+                            LoadedShard {
                                 shard_index: shard.shard_index,
-                                reference_files,
-                                reference_contig_names,
-                                mapping_results: raw_stats.mapping_results,
-                                _load_elapsed: load_elapsed,
-                                mapping_elapsed: raw_stats.mapping_elapsed,
-                                mapping_count: shard_mapping_count,
-                                #[cfg(debug_assertions)]
-                                max_mapping_result_bytes: raw_stats.max_mapping_result_bytes,
-                                #[cfg(debug_assertions)]
-                                metrics: raw_stats.metrics,
-                            })
-                        })
-                        .collect::<io::Result<Vec<_>>>()
-                })?;
+                                shard_offset,
+                                sketch,
+                            }
+                        });
 
-                shard_results.sort_unstable_by_key(|result| result.shard_index);
+                        if tx.send(load_result).is_err() {
+                            break;
+                        }
+                    }
+                });
 
-                let total_mappings: usize = shard_results
-                    .iter()
-                    .map(|res| res.mapping_results.len())
-                    .sum();
-                query_mapping_results.reserve(total_mappings);
+                let mut shards_done: usize = 0usize;
+                while let Ok(load_result) = rx.recv() {
+                    let mut loaded: LoadedShard = load_result?;
+                    let frequency_threshold: usize = loaded
+                        .sketch
+                        .index
+                        .frequency_threshold(args.freq_threshold_percent);
 
-                for mut shard_result in shard_results {
-                    query_reference_files.append(&mut shard_result.reference_files);
+                    let mut raw_stats: RawQueryMappingStats = collect_query_mappings(
+                        &loaded.sketch,
+                        &query_file,
+                        args.kmer_size,
+                        args.window_size,
+                        args.mash_threshold,
+                        args.mash_confidence,
+                        args.threads,
+                        frequency_threshold,
+                        performance_metrics_enabled,
+                    )?;
+                    let shard_mapping_count: usize = raw_stats.mapping_results.len();
+                    let reference_file_offset: usize = reference_file_offsets[loaded.shard_offset];
+                    let reference_contig_offset: usize =
+                        reference_contig_offsets[loaded.shard_offset];
+
+                    for mapping in &mut raw_stats.mapping_results {
+                        mapping.reference_file_id += reference_file_offset;
+                        mapping.reference_contig_id += reference_contig_offset;
+                    }
+
+                    query_reference_files.append(&mut loaded.sketch.files);
                     if let (Some(ref mut master_contigs), Some(mut shard_contigs)) = (
                         &mut query_reference_contig_names,
-                        shard_result.reference_contig_names,
+                        loaded.sketch.contig_names,
                     ) {
                         master_contigs.append(&mut shard_contigs);
                     }
-                    query_mapping_results.append(&mut shard_result.mapping_results);
+                    query_mapping_results.append(&mut raw_stats.mapping_results);
 
-                    mapping_elapsed += shard_result.mapping_elapsed;
-                    mapping_count += shard_result.mapping_count;
+                    mapping_elapsed += raw_stats.mapping_elapsed;
+                    mapping_count += shard_mapping_count;
 
                     #[cfg(debug_assertions)]
                     {
                         if performance_metrics_enabled {
-                            mapping_detail_metrics.merge(shard_result.metrics);
+                            mapping_detail_metrics.merge(raw_stats.metrics);
                             max_mapping_result_bytes =
-                                max_mapping_result_bytes.max(shard_result.max_mapping_result_bytes);
+                                max_mapping_result_bytes.max(raw_stats.max_mapping_result_bytes);
                         }
                     }
+
+                    shards_done += 1;
+                    if progress_enabled {
+                        emit_progress(
+                            "shard_load",
+                            &format!(
+                                "event=complete\tquery_done={query_index}\tshard={}\tshards_done={shards_done}\tshards_total={}\tmappings={}",
+                                loaded.shard_index,
+                                active_shards.len(),
+                                shard_mapping_count
+                            ),
+                            total_start,
+                        );
+                    }
+                    check_memory_limit("after shard query", runtime_options)?;
                 }
+                loader_handle.join().map_err(|_| {
+                    io::Error::new(io::ErrorKind::Other, "shard loader thread panicked")
+                })?;
 
                 let stats = write_query_outputs(
                     &query_reference_files,

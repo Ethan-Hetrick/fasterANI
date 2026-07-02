@@ -126,7 +126,8 @@ Sketch database / sharding:
   --bgzip                      Enable if reference sketch input is bgzip-compressed.
   --max-shard-minimizers <n>   Maximum estimated reference minimizers per shard
                                  default: 500_000_000, producing ~10 GiB shards.
-  --max-concurrent-shards <n>  Maximum number of shards to query concurrently.
+  --max-concurrent-shards <n>  Compatibility option; sharded queries now prefetch
+                                 one shard at a time and ignore this value.
   --shards <list>              Comma-separated shard indices and ranges to query,
                                  e.g. 1,3,5-8. Queries all shards when omitted.
                                  Requires --reference-sketch.

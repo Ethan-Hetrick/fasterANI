@@ -11,7 +11,10 @@ use std::{
 
 use boomphf::Mphf;
 
-use crate::ani::{ContigRecord, MinimizerKey, ReferenceContigs, ReferenceMinimizer, SeedHit};
+use crate::ani::{
+    ContigRecord, MinimizerKey, ReferenceContigs, ReferenceIndex, ReferenceMinimizer,
+    ReferenceSketch, SeedHit,
+};
 
 /// Memory-mapped minimal-perfect-hash index and the arrays it addresses.
 pub(crate) struct MmapReferenceIndex {
@@ -223,6 +226,27 @@ impl MmapFile {
 
     pub(crate) fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    pub(crate) fn prefetch_sequential(&self) {
+        unsafe {
+            libc::madvise(
+                self.ptr.as_ptr() as *mut libc::c_void,
+                self.len,
+                libc::MADV_SEQUENTIAL,
+            );
+        }
+    }
+}
+
+impl ReferenceSketch {
+    pub(crate) fn prefetch_sequential(&self) {
+        if let ReferenceIndex::Mphf(index) = &self.index {
+            index.mmap.prefetch_sequential();
+        }
+        if let ReferenceContigs::Mmap(contigs) = &self.contigs {
+            contigs.mmap.prefetch_sequential();
+        }
     }
 }
 
