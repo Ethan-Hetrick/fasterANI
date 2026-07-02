@@ -2,6 +2,8 @@ target/
 scripts/
 *.log
 *.txt
+*.jsonl
+*.json
 
 # Profiling artifacts
 flamegraph*.svg
