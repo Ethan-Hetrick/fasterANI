@@ -100,6 +100,79 @@ assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98
 }
 
 #[test]
+fn shards_flag_requires_reference_sketch() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            "assets/test-data/Escherichia_coli_str_K12_MG1655.fna",
+            "--query",
+            "assets/test-data/Shigella_flexneri_2a_01.fna",
+            "--shards",
+            "1",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("--shards requires --reference-sketch"));
+}
+
+#[test]
+fn reference_is_optional_when_querying_existing_sharded_sketch() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("query-existing-sharded-sketch");
+    let sketch_prefix = temp_dir.join("database");
+    let reference = "assets/test-data/Escherichia_coli_str_K12_MG1655.fna";
+    let query = "assets/test-data/Shigella_flexneri_2a_01.fna";
+
+    let build_output = Command::new(exe)
+        .args([
+            "--reference",
+            reference,
+            "--reference-sketch",
+            sketch_prefix.to_str().expect("utf-8 sketch prefix"),
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        build_output.status.success(),
+        "build exited with status {:?}: {}",
+        build_output.status,
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let query_output = Command::new(exe)
+        .args([
+            "--query",
+            query,
+            "--reference-sketch",
+            sketch_prefix.to_str().expect("utf-8 sketch prefix"),
+            "--shards",
+            "1",
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        query_output.status.success(),
+        "query exited with status {:?}: {}",
+        query_output.status,
+        String::from_utf8_lossy(&query_output.stderr)
+    );
+    let stderr = String::from_utf8(query_output.stderr).expect("stderr was not valid UTF-8");
+    assert!(!stderr.contains("missing --reference"));
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
 fn quiet_suppresses_startup_summary_from_cli() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
     let output = Command::new(exe)

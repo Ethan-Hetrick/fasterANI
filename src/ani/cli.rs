@@ -1,6 +1,7 @@
 //! Command-line argument parsing and the `--help` text.
 
 use std::{
+    collections::HashSet,
     env, fs, io, path,
     path::{Path, PathBuf},
     process,
@@ -43,11 +44,12 @@ pub(crate) struct CliArgs {
     pub(crate) max_memory_bytes: Option<u64>,
     pub(crate) max_shard_minimizers: usize,
     pub(crate) max_concurrent_shards: Option<usize>,
+    pub(crate) shard_filter: Option<HashSet<usize>>,
     pub(crate) index_build_mode: IndexBuildMode,
 }
 
 fn usage() -> &'static str {
-    "usage: fasterANI (--reference <ref.fa> | --reference-list <refs.txt>)... \
+    "usage: fasterANI [(--reference <ref.fa> | --reference-list <refs.txt>)...] \
 [(--query <query.fa> | --query-list <queries.txt>)...] [options]
 
 Inputs:
@@ -125,6 +127,9 @@ Sketch database / sharding:
   --max-shard-minimizers <n>   Maximum estimated reference minimizers per shard
                                  default: 500_000_000, producing ~10 GiB shards.
   --max-concurrent-shards <n>  Maximum number of shards to query concurrently.
+  --shards <list>              Comma-separated shard indices and ranges to query,
+                                 e.g. 1,3,5-8. Queries all shards when omitted.
+                                 Requires --reference-sketch.
   --index-build-mode <mode>    auto | hash | partitioned (default auto).
 
 Resources:
@@ -375,6 +380,16 @@ impl RuntimeStartupOutput {
                 )),
             );
         }
+        if let Some(filter) = &args.shard_filter {
+            let mut sorted: Vec<usize> = filter.iter().copied().collect();
+            sorted.sort_unstable();
+            let rendered: Vec<String> = sorted.iter().map(|index| index.to_string()).collect();
+            entries.push(format!(
+                "shards = [{}]{}",
+                rendered.join(", "),
+                source_comment(sources.shards)
+            ));
+        }
 
         if entries.is_empty() {
             return;
@@ -405,6 +420,7 @@ struct ParameterSources {
     max_memory_gb: Option<ParameterSource>,
     max_shard_minimizers: Option<ParameterSource>,
     max_concurrent_shards: Option<ParameterSource>,
+    shards: Option<ParameterSource>,
     index_build_mode: Option<ParameterSource>,
     reference_sketch: Option<ParameterSource>,
     tmp: Option<ParameterSource>,
@@ -709,6 +725,52 @@ fn max_memory_gb_to_bytes(value: f64, source: &str) -> io::Result<u64> {
     Ok((value * 1024.0 * 1024.0 * 1024.0) as u64)
 }
 
+fn parse_shard_filter(s: &str) -> io::Result<HashSet<usize>> {
+    let mut indices = HashSet::new();
+    for token in s.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = token.split_once('-') {
+            let start: usize = start.trim().parse::<usize>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid --shards range start {start:?}: {err}"),
+                )
+            })?;
+            let end: usize = end.trim().parse::<usize>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid --shards range end {end:?}: {err}"),
+                )
+            })?;
+            if start > end {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid --shards range {start}-{end}: start must be <= end"),
+                ));
+            }
+            indices.extend(start..=end);
+        } else {
+            let index: usize = token.parse::<usize>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid --shards value {token:?}: {err}"),
+                )
+            })?;
+            indices.insert(index);
+        }
+    }
+    if indices.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--shards must specify at least one shard index",
+        ));
+    }
+    Ok(indices)
+}
+
 /// Parse command-line arguments.
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let raw_args: Vec<String> = env::args().skip(1).collect();
@@ -750,6 +812,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut max_memory_bytes: Option<u64> = None;
     let mut max_concurrent_shards: Option<usize> = None;
     let mut max_shard_minimizers: Option<usize> = None;
+    let mut shard_filter: Option<HashSet<usize>> = None;
     let mut index_build_mode: IndexBuildMode = IndexBuildMode::Auto;
 
     if let Some(path) = params_file_path.as_deref() {
@@ -903,6 +966,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     if let Some(value) = params_file_config.max_concurrent_shards {
         max_concurrent_shards = Some(value);
         sources.max_concurrent_shards = Some(ParameterSource::ParamsFile);
+    }
+    if let Some(value) = params_file_config.shards.as_ref() {
+        shard_filter = Some(parse_shard_filter(value)?);
+        sources.shards = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.index_build_mode.as_ref() {
         index_build_mode = value.parse::<IndexBuildMode>()?;
@@ -1107,6 +1174,13 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 }
                 max_concurrent_shards = Some(n);
                 sources.max_concurrent_shards = Some(ParameterSource::Cli);
+            }
+            "--shards" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--shards requires a value")
+                })?;
+                shard_filter = Some(parse_shard_filter(&value)?);
+                sources.shards = Some(ParameterSource::Cli);
             }
             "--max-shard-minimizers" => {
                 let value = args.next().ok_or_else(|| {
@@ -1314,10 +1388,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         }
     }
 
-    if references.is_empty() {
+    if references.is_empty() && sketch_path.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("missing --reference\n{}", usage()),
+            format!("missing --reference or --reference-sketch\n{}", usage()),
         ));
     }
 
@@ -1393,6 +1467,12 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             "--max-concurrent-shards must be at least 1",
         ));
     }
+    if shard_filter.is_some() && sketch_path.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--shards requires --reference-sketch",
+        ));
+    }
     if !fragment_stride_was_set {
         fragment_stride = fragment_length;
     }
@@ -1458,6 +1538,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         max_memory_bytes,
         max_concurrent_shards,
         max_shard_minimizers,
+        shard_filter,
         index_build_mode,
     };
     if !cli_args.quiet {
@@ -1465,6 +1546,50 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     }
 
     Ok(Some(cli_args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_shard_filter;
+
+    #[test]
+    fn parse_shard_filter_handles_single_index() {
+        let filter = parse_shard_filter("3").unwrap();
+        assert_eq!(filter, [3].into());
+    }
+
+    #[test]
+    fn parse_shard_filter_handles_comma_list() {
+        let filter = parse_shard_filter("1,3,5").unwrap();
+        assert_eq!(filter, [1, 3, 5].into());
+    }
+
+    #[test]
+    fn parse_shard_filter_handles_range() {
+        let filter = parse_shard_filter("5-8").unwrap();
+        assert_eq!(filter, [5, 6, 7, 8].into());
+    }
+
+    #[test]
+    fn parse_shard_filter_handles_mixed() {
+        let filter = parse_shard_filter("1,10-11,12").unwrap();
+        assert_eq!(filter, [1, 10, 11, 12].into());
+    }
+
+    #[test]
+    fn parse_shard_filter_rejects_inverted_range() {
+        assert!(parse_shard_filter("8-5").is_err());
+    }
+
+    #[test]
+    fn parse_shard_filter_rejects_empty() {
+        assert!(parse_shard_filter("").is_err());
+    }
+
+    #[test]
+    fn parse_shard_filter_rejects_non_numeric() {
+        assert!(parse_shard_filter("1,foo,3").is_err());
+    }
 }
 
 fn parse_max_memory_gb(value: &str) -> io::Result<u64> {

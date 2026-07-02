@@ -21,6 +21,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) max_memory_gb: Option<f64>,
     pub(crate) max_shard_minimizers: Option<usize>,
     pub(crate) max_concurrent_shards: Option<usize>,
+    pub(crate) shards: Option<String>,
     pub(crate) index_build_mode: Option<String>,
     pub(crate) bgzip: Option<bool>,
     pub(crate) header: Option<bool>,

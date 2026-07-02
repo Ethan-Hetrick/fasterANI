@@ -551,32 +551,75 @@ pub fn run() -> io::Result<()> {
                 }
             }
             SketchDatabase::Sharded { prefix, manifest } => {
+                let active_shards: Vec<_> = match &args.shard_filter {
+                    Some(filter) => {
+                        let manifest_indices: HashSet<usize> = manifest
+                            .shards
+                            .iter()
+                            .map(|shard| shard.shard_index)
+                            .collect();
+                        let mut unknown: Vec<usize> = filter
+                            .iter()
+                            .copied()
+                            .filter(|index| !manifest_indices.contains(index))
+                            .collect();
+                        if !unknown.is_empty() {
+                            unknown.sort_unstable();
+                            let mut available: Vec<usize> =
+                                manifest_indices.iter().copied().collect();
+                            available.sort_unstable();
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!(
+                                    "--shards specified unknown shard indices: {}; available: {}",
+                                    unknown
+                                        .iter()
+                                        .map(|index| index.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    available
+                                        .iter()
+                                        .map(|index| index.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            ));
+                        }
+                        manifest
+                            .shards
+                            .iter()
+                            .filter(|shard| filter.contains(&shard.shard_index))
+                            .collect()
+                    }
+                    None => manifest.shards.iter().collect(),
+                };
                 let mut query_reference_files: Vec<ReferenceFile> =
-                    Vec::with_capacity(manifest.total_references);
+                    Vec::with_capacity(active_shards.iter().map(|s| s.reference_count).sum());
                 let mut query_reference_contig_names: Option<Vec<ReferenceContigName>> =
-                    mapping_stats_requested
-                        .then(|| Vec::with_capacity(manifest.total_reference_contigs));
+                    mapping_stats_requested.then(|| {
+                        Vec::with_capacity(active_shards.iter().map(|s| s.reference_contigs).sum())
+                    });
 
-                let mut query_mapping_results: Vec<MappingResult> = Vec::with_capacity(
-                    manifest
-                        .shards
-                        .iter()
-                        .map(|s| s.reference_contigs * 2)
-                        .sum(),
-                );
+                let mut query_mapping_results: Vec<MappingResult> =
+                    Vec::with_capacity(active_shards.iter().map(|s| s.reference_contigs * 2).sum());
 
                 let shard_query_parallelism: usize = args
                     .threads
                     .max(1)
                     .min(args.max_concurrent_shards.unwrap_or(1))
-                    .min(manifest.shards.len().max(1));
+                    .min(active_shards.len().max(1));
                 let mapping_threads_per_shard: usize =
                     args.threads.max(1).div_ceil(shard_query_parallelism.max(1));
 
+                let mut reference_file_offsets: Vec<usize> =
+                    Vec::with_capacity(active_shards.len());
+                let mut next_reference_file_offset: usize = 0usize;
                 let mut reference_contig_offsets: Vec<usize> =
-                    Vec::with_capacity(manifest.shards.len());
+                    Vec::with_capacity(active_shards.len());
                 let mut next_reference_contig_offset: usize = 0usize;
-                for shard in &manifest.shards {
+                for shard in &active_shards {
+                    reference_file_offsets.push(next_reference_file_offset);
+                    next_reference_file_offset += shard.reference_count;
                     reference_contig_offsets.push(next_reference_contig_offset);
                     next_reference_contig_offset += shard.reference_contigs;
                 }
@@ -593,8 +636,7 @@ pub fn run() -> io::Result<()> {
                     })?;
 
                 let mut shard_results: Vec<ShardQueryResult> = pool.install(|| {
-                    manifest
-                        .shards
+                    active_shards
                         .par_iter()
                         .enumerate()
                         .map(|(shard_offset, shard)| {
@@ -604,7 +646,7 @@ pub fn run() -> io::Result<()> {
                                     &format!(
                                         "event=start\tquery_done={query_index}\tshard={}\tshards_total={}\tfilename={}\tshard_query_parallelism={shard_query_parallelism}\tmapping_threads_per_shard={mapping_threads_per_shard}",
                                         shard.shard_index,
-                                        manifest.shards.len(),
+                                        active_shards.len(),
                                         shard.filename
                                     ),
                                     total_start,
@@ -641,7 +683,7 @@ pub fn run() -> io::Result<()> {
                                 performance_metrics_enabled,
                             )?;
                             let shard_mapping_count: usize = raw_stats.mapping_results.len();
-                            let reference_file_offset: usize = shard.first_reference;
+                            let reference_file_offset: usize = reference_file_offsets[shard_offset];
                             let reference_contig_offset: usize = reference_contig_offsets[shard_offset];
 
                             for mapping in &mut raw_stats.mapping_results {
@@ -659,7 +701,7 @@ pub fn run() -> io::Result<()> {
                                     &format!(
                                         "event=complete\tquery_done={query_index}\tshard={}\tshards_done={shards_done}\tshards_total={}\tmappings={}",
                                         shard.shard_index,
-                                        manifest.shards.len(),
+                                        active_shards.len(),
                                         shard_mapping_count
                                     ),
                                     total_start,
