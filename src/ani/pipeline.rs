@@ -17,13 +17,14 @@ use crate::ani::{
     emit_progress, fastani_compatible_fragment_mode, final_ani_computation,
     is_no_usable_fragments_error, legacy_sketch_path, manifest_path,
     map_query_to_reference_parallel, open_fasta_reader, parse_cli_args,
-    performance_metrics_enabled, shard_entry_path, AniComputation, CliArgs, MappingOutput,
-    MappingResult, MappingResultKey, QueryFile, QueryFragment, ReferenceContigName, ReferenceFile,
-    ReferenceSketch, RuntimeOptions, ShardedBuildOptions, SketchDatabase, SketchParams,
+    performance_metrics_enabled, shard_entry_path, AniComputation, CliArgs, MappingMetrics,
+    MappingOutput, MappingResult, MappingResultKey, QueryFile, QueryFragment, ReferenceContigName,
+    ReferenceFile, ReferenceSketch, RuntimeOptions, ShardedBuildOptions, SketchDatabase,
+    SketchParams,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
-    memory_mib, peak_rss_kb, MappingMetrics, QueryMemoryEstimate, ReferenceMemoryEstimate,
+    memory_mib, peak_rss_kb, QueryMemoryEstimate, ReferenceMemoryEstimate,
     SEED_HIT_HISTOGRAM_OVERFLOW_LABEL, SEED_HIT_HISTOGRAM_UPPER_BOUNDS,
 };
 
@@ -32,19 +33,17 @@ struct QueryMappingStats {
     pub(crate) summary_elapsed: std::time::Duration,
     pub(crate) mapping_count: usize,
     pub(crate) emitted_pairs: usize,
+    pub(crate) metrics: MappingMetrics,
     #[cfg(debug_assertions)]
     pub(crate) max_mapping_result_bytes: usize,
-    #[cfg(debug_assertions)]
-    pub(crate) metrics: MappingMetrics,
 }
 
 struct RawQueryMappingStats {
     pub(crate) mapping_results: Vec<MappingResult>,
     pub(crate) mapping_elapsed: std::time::Duration,
+    pub(crate) metrics: MappingMetrics,
     #[cfg(debug_assertions)]
     pub(crate) max_mapping_result_bytes: usize,
-    #[cfg(debug_assertions)]
-    pub(crate) metrics: MappingMetrics,
 }
 
 struct LoadedShard {
@@ -89,18 +88,16 @@ fn collect_query_mappings(
     )?;
     let mapping_elapsed: std::time::Duration = mapping_start.elapsed();
     let mapping_results: Vec<MappingResult> = mapping_output.results;
+    let metrics: MappingMetrics = mapping_output.metrics;
     #[cfg(debug_assertions)]
     let max_mapping_result_bytes: usize = mapping_results.capacity() * size_of::<MappingResult>();
-    #[cfg(debug_assertions)]
-    let metrics: MappingMetrics = mapping_output.metrics;
 
     Ok(RawQueryMappingStats {
         mapping_results,
         mapping_elapsed,
+        metrics,
         #[cfg(debug_assertions)]
         max_mapping_result_bytes,
-        #[cfg(debug_assertions)]
-        metrics,
     })
 }
 
@@ -325,10 +322,9 @@ fn map_query_against_reference_sketch(
         summary_elapsed,
         mapping_count,
         emitted_pairs,
+        metrics: raw_stats.metrics,
         #[cfg(debug_assertions)]
         max_mapping_result_bytes: raw_stats.max_mapping_result_bytes,
-        #[cfg(debug_assertions)]
-        metrics: raw_stats.metrics,
     })
 }
 
@@ -436,7 +432,6 @@ pub fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     let mut max_mapping_result_bytes: usize = 0usize;
     let mut mapping_count: usize = 0usize;
-    #[cfg(debug_assertions)]
     let mut mapping_detail_metrics: MappingMetrics = MappingMetrics::default();
     let mut emitted_pairs: usize = 0usize;
     let mut skipped_queries: usize = 0usize;
@@ -593,6 +588,9 @@ pub fn run() -> io::Result<()> {
         if !preloaded_queries.is_empty() {
             let mut per_query_mapping_results: Vec<Vec<MappingResult>> =
                 (0..preloaded_queries.len()).map(|_| Vec::new()).collect();
+            let mut per_query_mapping_metrics: Vec<MappingMetrics> = (0..preloaded_queries.len())
+                .map(|_| MappingMetrics::default())
+                .collect();
             let mut all_reference_files: Vec<ReferenceFile> =
                 Vec::with_capacity(next_reference_file_offset);
             let mut all_reference_contig_names: Option<Vec<ReferenceContigName>> =
@@ -676,10 +674,11 @@ pub fn run() -> io::Result<()> {
                     mapping_elapsed += raw_stats.mapping_elapsed;
                     mapping_count += query_shard_mapping_count;
                     shard_mapping_count += query_shard_mapping_count;
+                    per_query_mapping_metrics[query_slot].merge(raw_stats.metrics.clone());
+                    mapping_detail_metrics.merge(raw_stats.metrics);
                     #[cfg(debug_assertions)]
                     {
                         if performance_metrics_enabled {
-                            mapping_detail_metrics.merge(raw_stats.metrics);
                             max_mapping_result_bytes =
                                 max_mapping_result_bytes.max(raw_stats.max_mapping_result_bytes);
                         }
@@ -726,13 +725,15 @@ pub fn run() -> io::Result<()> {
                 )?;
                 summary_elapsed += stats.0;
                 emitted_pairs += stats.1;
+                let query_candidate_count: usize =
+                    per_query_mapping_metrics[query_slot].candidate_regions_scored;
 
                 let query_total_time = preloaded_query.query_start.elapsed();
                 if progress_enabled {
                     emit_progress(
                         "query",
                         &format!(
-                            "event=complete\tquery_done={}\tquery_total={}\tfragments={}\tminimizers={}\tseed_minimizers={}\telapsed_ms={}",
+                            "event=complete\tquery_done={}\tquery_total={}\tfragments={}\tminimizers={}\tseed_minimizers={}\tcandidates={query_candidate_count}\telapsed_ms={}",
                             preloaded_query.query_index + 1,
                             args.queries.len(),
                             preloaded_query.fragment_count,
@@ -832,9 +833,10 @@ pub fn run() -> io::Result<()> {
             summary_elapsed += stats.summary_elapsed;
             mapping_count += stats.mapping_count;
             emitted_pairs += stats.emitted_pairs;
+            let query_candidate_count: usize = stats.metrics.candidate_regions_scored;
+            mapping_detail_metrics.merge(stats.metrics);
             #[cfg(debug_assertions)]
             {
-                mapping_detail_metrics.merge(stats.metrics);
                 max_mapping_result_bytes =
                     max_mapping_result_bytes.max(stats.max_mapping_result_bytes);
             }
@@ -844,7 +846,7 @@ pub fn run() -> io::Result<()> {
                 emit_progress(
                     "query",
                     &format!(
-                        "event=complete\tquery_done={}\tquery_total={}\tfragments={query_fragment_count}\tminimizers={query_minimizer_count}\tseed_minimizers={query_seed_minimizer_count}\telapsed_ms={}",
+                        "event=complete\tquery_done={}\tquery_total={}\tfragments={query_fragment_count}\tminimizers={query_minimizer_count}\tseed_minimizers={query_seed_minimizer_count}\tcandidates={query_candidate_count}\telapsed_ms={}",
                         query_index + 1,
                         args.queries.len(),
                         query_total_time.as_millis()
@@ -864,11 +866,12 @@ pub fn run() -> io::Result<()> {
         emit_progress(
             "complete",
             &format!(
-                "event=run\treference_mode={reference_mode}\treferences={}\tqueries={}\tskipped_queries={skipped_queries}\treference_contigs={}\tunique_minimizers={}\tquery_fragments={total_query_fragments_all}\tquery_minimizers={total_query_minimizers_all}\tseed_minimizers={total_query_seed_minimizers_all}\tmappings={mapping_count}\temitted_pairs={emitted_pairs}",
+                "event=run\treference_mode={reference_mode}\treferences={}\tqueries={}\tskipped_queries={skipped_queries}\treference_contigs={}\tunique_minimizers={}\tquery_fragments={total_query_fragments_all}\tquery_minimizers={total_query_minimizers_all}\tseed_minimizers={total_query_seed_minimizers_all}\tcandidates={}\tmappings={mapping_count}\temitted_pairs={emitted_pairs}",
                 reference_database.reference_count(),
                 args.queries.len(),
                 reference_database.contig_count(),
-                reference_database.unique_minimizer_count()
+                reference_database.unique_minimizer_count(),
+                mapping_detail_metrics.candidate_regions_scored
             ),
             total_start,
         );

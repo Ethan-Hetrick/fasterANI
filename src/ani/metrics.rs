@@ -1,8 +1,8 @@
-//! Optional hot-path mapping metrics (debug builds) and seed-hit histograms.
+//! Hot-path mapping counters and optional debug-only seed-hit histograms.
 
 use crate::ani::MappingResult;
 
-/// Fine-grained counters for the query mapping hot path.
+/// Fine-grained debug-only seed-hit histogram buckets.
 #[cfg(debug_assertions)]
 pub(crate) const SEED_HIT_HISTOGRAM_UPPER_BOUNDS: [usize; 13] =
     [1, 2, 4, 9, 24, 49, 99, 249, 499, 999, 4_999, 9_999, 49_999];
@@ -10,60 +10,75 @@ pub(crate) const SEED_HIT_HISTOGRAM_UPPER_BOUNDS: [usize; 13] =
 #[cfg(debug_assertions)]
 pub(crate) const SEED_HIT_HISTOGRAM_OVERFLOW_LABEL: &str = "50000+";
 
-#[cfg(debug_assertions)]
 #[derive(Clone, Default)]
 pub(crate) struct MappingMetrics {
-    pub(crate) candidate_discovery_calls: usize,
-    pub(crate) seed_hits_collected: usize,
     pub(crate) candidate_regions_found: usize,
     pub(crate) candidate_regions_scored: usize,
+    #[cfg(debug_assertions)]
+    pub(crate) candidate_discovery_calls: usize,
+    #[cfg(debug_assertions)]
+    pub(crate) seed_hits_collected: usize,
+    #[cfg(debug_assertions)]
     pub(crate) reference_minimizers_scanned: usize,
+    #[cfg(debug_assertions)]
     pub(crate) scoring_window_steps: usize,
+    #[cfg(debug_assertions)]
     pub(crate) retained_mappings: usize,
+    #[cfg(debug_assertions)]
     pub(crate) candidate_discovery_elapsed: std::time::Duration,
+    #[cfg(debug_assertions)]
     pub(crate) scoring_elapsed: std::time::Duration,
+    #[cfg(debug_assertions)]
     pub(crate) seed_lookup_count: usize,
+    #[cfg(debug_assertions)]
     pub(crate) seed_lookup_zero_hits: usize,
+    #[cfg(debug_assertions)]
     pub(crate) seed_lookup_skipped_by_frequency: usize,
+    #[cfg(debug_assertions)]
     pub(crate) seed_hit_list_max: usize,
+    #[cfg(debug_assertions)]
     pub(crate) seed_hit_list_bins: [usize; SEED_HIT_HISTOGRAM_UPPER_BOUNDS.len() + 1],
+    #[cfg(debug_assertions)]
     pub(crate) seed_hit_list_bin_hits: [usize; SEED_HIT_HISTOGRAM_UPPER_BOUNDS.len() + 1],
 }
 
-#[cfg(debug_assertions)]
 impl MappingMetrics {
     pub(crate) fn merge(&mut self, other: Self) {
-        self.candidate_discovery_calls += other.candidate_discovery_calls;
-        self.seed_hits_collected += other.seed_hits_collected;
         self.candidate_regions_found += other.candidate_regions_found;
         self.candidate_regions_scored += other.candidate_regions_scored;
-        self.reference_minimizers_scanned += other.reference_minimizers_scanned;
-        self.scoring_window_steps += other.scoring_window_steps;
-        self.retained_mappings += other.retained_mappings;
-        self.candidate_discovery_elapsed += other.candidate_discovery_elapsed;
-        self.scoring_elapsed += other.scoring_elapsed;
-        self.seed_lookup_count += other.seed_lookup_count;
-        self.seed_lookup_zero_hits += other.seed_lookup_zero_hits;
-        self.seed_lookup_skipped_by_frequency += other.seed_lookup_skipped_by_frequency;
-        self.seed_hit_list_max = self.seed_hit_list_max.max(other.seed_hit_list_max);
-
-        for (left, right) in self
-            .seed_hit_list_bins
-            .iter_mut()
-            .zip(other.seed_hit_list_bins)
+        #[cfg(debug_assertions)]
         {
-            *left += right;
-        }
+            self.candidate_discovery_calls += other.candidate_discovery_calls;
+            self.seed_hits_collected += other.seed_hits_collected;
+            self.reference_minimizers_scanned += other.reference_minimizers_scanned;
+            self.scoring_window_steps += other.scoring_window_steps;
+            self.retained_mappings += other.retained_mappings;
+            self.candidate_discovery_elapsed += other.candidate_discovery_elapsed;
+            self.scoring_elapsed += other.scoring_elapsed;
+            self.seed_lookup_count += other.seed_lookup_count;
+            self.seed_lookup_zero_hits += other.seed_lookup_zero_hits;
+            self.seed_lookup_skipped_by_frequency += other.seed_lookup_skipped_by_frequency;
+            self.seed_hit_list_max = self.seed_hit_list_max.max(other.seed_hit_list_max);
 
-        for (left, right) in self
-            .seed_hit_list_bin_hits
-            .iter_mut()
-            .zip(other.seed_hit_list_bin_hits)
-        {
-            *left += right;
+            for (left, right) in self
+                .seed_hit_list_bins
+                .iter_mut()
+                .zip(other.seed_hit_list_bins)
+            {
+                *left += right;
+            }
+
+            for (left, right) in self
+                .seed_hit_list_bin_hits
+                .iter_mut()
+                .zip(other.seed_hit_list_bin_hits)
+            {
+                *left += right;
+            }
         }
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) fn record_seed_lookup(
         &mut self,
         hit_list_len: Option<usize>,
@@ -87,10 +102,6 @@ impl MappingMetrics {
     }
 }
 
-#[cfg(not(debug_assertions))]
-#[derive(Clone, Default)]
-pub(crate) struct MappingMetrics;
-
 #[cfg(debug_assertions)]
 fn seed_hit_histogram_bin_index(hit_list_len: usize) -> usize {
     SEED_HIT_HISTOGRAM_UPPER_BOUNDS
@@ -102,6 +113,5 @@ fn seed_hit_histogram_bin_index(hit_list_len: usize) -> usize {
 /// Raw mapping results plus optional hot-path metrics for one query file.
 pub(crate) struct MappingOutput {
     pub(crate) results: Vec<MappingResult>,
-    #[cfg(debug_assertions)]
     pub(crate) metrics: MappingMetrics,
 }

@@ -179,7 +179,6 @@ fn map_query_to_reference(
 
     MappingOutput {
         results: mapping_results,
-        #[cfg(debug_assertions)]
         metrics: mapping_metrics,
     }
 }
@@ -249,24 +248,19 @@ pub(crate) fn map_query_to_reference_parallel(
                     (scratch, mapping_results, mapping_metrics)
                 },
             )
-            .map(|(_scratch, mapping_results, mapping_metrics)| {
-                #[cfg(not(debug_assertions))]
-                let _ = mapping_metrics;
-                MappingOutput {
+            .map(
+                |(_scratch, mapping_results, mapping_metrics)| MappingOutput {
                     results: mapping_results,
-                    #[cfg(debug_assertions)]
                     metrics: mapping_metrics,
-                }
-            })
+                },
+            )
             .reduce(
                 || MappingOutput {
                     results: Vec::new(),
-                    #[cfg(debug_assertions)]
                     metrics: MappingMetrics::default(),
                 },
                 |mut left, mut right| {
                     left.results.append(&mut right.results);
-                    #[cfg(debug_assertions)]
                     left.metrics.merge(right.metrics);
                     left
                 },
@@ -283,7 +277,7 @@ fn record_candidate_discovery_metrics(
 ) {
     mapping_metrics.candidate_discovery_calls += 1;
     mapping_metrics.seed_hits_collected += seed_hit_count;
-    mapping_metrics.candidate_regions_found += candidate_region_count;
+    let _ = candidate_region_count;
     mapping_metrics.candidate_discovery_elapsed += elapsed;
 }
 
@@ -304,7 +298,6 @@ fn map_query_fragment_into(
 ) {
     #[cfg(not(debug_assertions))]
     {
-        let _ = mapping_metrics;
         let _ = collect_metrics;
     }
 
@@ -341,12 +334,11 @@ fn map_query_fragment_into(
             start.elapsed(),
         );
     }
+    let candidate_region_count: usize = scratch.candidate_regions.len();
+    mapping_metrics.candidate_regions_found += candidate_region_count;
+    mapping_metrics.candidate_regions_scored += candidate_region_count;
 
     scratch.fragment_mappings.clear();
-    #[cfg(debug_assertions)]
-    if collect_metrics {
-        mapping_metrics.candidate_regions_scored += scratch.candidate_regions.len();
-    }
 
     for &candidate_region in &scratch.candidate_regions {
         #[cfg(debug_assertions)]
