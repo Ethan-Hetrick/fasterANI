@@ -126,5 +126,5 @@ pub(crate) struct MappingScratch {
     pub(crate) fragment_mappings: Vec<MappingResult>,
     pub(crate) counter: SlidingSketchCounter,
     pub(crate) slot_sorted_minimizers: Vec<(u64, MinimizerKey)>,
-    pub(crate) hit_ranges: Vec<(u32, u32)>,
+    pub(crate) hit_ranges: Vec<(usize, usize)>,
 }

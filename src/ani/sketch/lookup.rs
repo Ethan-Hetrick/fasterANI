@@ -18,7 +18,7 @@ impl ReferenceSketch {
         seed_hits: &mut Vec<SeedHit>,
         candidate_regions: &mut Vec<ReferenceCandidateRegion>,
         slot_sorted_minimizers: &mut Vec<(u64, MinimizerKey)>,
-        hit_ranges: &mut Vec<(u32, u32)>,
+        hit_ranges: &mut Vec<(usize, usize)>,
         #[cfg(debug_assertions)] mut mapping_metrics: Option<&mut MappingMetrics>,
     ) {
         seed_hits.clear();
@@ -29,8 +29,8 @@ impl ReferenceSketch {
         self.index
             .slot_sorted_minimizers(query_minimizers, slot_sorted_minimizers);
 
-        if slot_sorted_minimizers.is_empty() {
-            // Hash index path or no minimizers found: fall back to direct lookup.
+        if slot_sorted_minimizers.is_empty() && !self.index.has_slot_sorted_lookup() {
+            // Hash index path has no slot ordering; fall back to direct lookup.
             for minimizer in query_minimizers {
                 let hits: Option<&[SeedHit]> = self.index.get(minimizer);
                 #[cfg(debug_assertions)]

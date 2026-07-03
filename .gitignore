@@ -4,6 +4,7 @@ scripts/
 *.txt
 *.jsonl
 *.json
+*plan*.md
 
 # Profiling artifacts
 flamegraph*.svg

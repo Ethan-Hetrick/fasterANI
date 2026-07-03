@@ -14,7 +14,7 @@ use crate::ani::{
     open_fasta_reader, split_sequence_ranges, FastaInput, MinimizerKey, ReferenceContig,
     ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHashShard, ReferenceHitMap,
     ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
-    REFERENCE_PROGRESS_INTERVAL,
+    TransientReferenceIndex, REFERENCE_PROGRESS_INTERVAL,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{memory_mib, reference_build_struct_bytes, ContigRecord, ReferenceMemoryEstimate};
@@ -29,6 +29,7 @@ struct FileBuild {
     minimizer_count: usize,
 }
 
+#[allow(dead_code)]
 struct ReferenceIndexBuild {
     index: ReferenceIndex,
     target_ranges: usize,
@@ -39,6 +40,7 @@ struct ReferenceIndexBuild {
     shards: usize,
 }
 
+#[allow(dead_code)]
 struct IndexRangeBuild {
     index: ReferenceHitMap,
     unique_keys: usize,
@@ -175,6 +177,7 @@ fn unique_key_count(hits: &[(MinimizerKey, SeedHit)]) -> usize {
     }
 }
 
+#[allow(dead_code)]
 fn split_key_aligned_ranges(hits: &[(MinimizerKey, SeedHit)], parts: usize) -> Vec<Range<usize>> {
     if hits.is_empty() {
         return Vec::new();
@@ -204,6 +207,7 @@ fn split_key_aligned_ranges(hits: &[(MinimizerKey, SeedHit)], parts: usize) -> V
     ranges
 }
 
+#[allow(dead_code)]
 fn build_index_range_with_progress(
     range_id: usize,
     hits: &[(MinimizerKey, SeedHit)],
@@ -276,6 +280,7 @@ fn build_index_range_with_progress(
     }
 }
 
+#[allow(dead_code)]
 fn build_reference_index(
     all_hits: &[(MinimizerKey, SeedHit)],
     pool: Option<&rayon::ThreadPool>,
@@ -482,6 +487,16 @@ impl ReferenceSketch {
                     ..ReferenceMemoryEstimate::default()
                 }
             }
+            ReferenceIndex::Transient(index) => ReferenceMemoryEstimate {
+                reference_minimizers,
+                reference_minimizer_vec_bytes,
+                unique_index_keys: index.keys.len(),
+                seed_hits: index.hit_payloads.len(),
+                seed_hit_vec_bytes: index.hit_payloads.capacity() * size_of::<SeedHit>(),
+                hash_index_rough_bytes: index.keys.capacity() * size_of::<MinimizerKey>()
+                    + index.hit_offsets.capacity() * size_of::<usize>(),
+                ..ReferenceMemoryEstimate::default()
+            },
             ReferenceIndex::Mphf(index) => ReferenceMemoryEstimate {
                 reference_minimizers,
                 reference_minimizer_vec_bytes,
@@ -637,8 +652,7 @@ impl ReferenceSketch {
             all_hits
                 .sort_unstable_by_key(|&(key, hit)| (key, hit.reference_contig_id, hit.position));
         }
-        let sorted_unique_minimizers: Option<usize> =
-            merge_start.map(|_| unique_key_count(&all_hits));
+        let sorted_unique_minimizers: usize = unique_key_count(&all_hits);
 
         if let Some(start) = merge_start {
             emit_progress(
@@ -647,21 +661,41 @@ impl ReferenceSketch {
                     "event=sort_complete\tphase_ms={:.3}\thit_records={}\tunique_minimizers={}\tworker_threads={worker_threads}",
                     sort_start.elapsed().as_secs_f64() * 1000.0,
                     all_hits.len(),
-                    sorted_unique_minimizers.unwrap_or(0)
+                    sorted_unique_minimizers
                 ),
                 start,
             );
         }
 
-        let ReferenceIndexBuild {
-            index,
-            target_ranges,
-            actual_ranges,
-            min_range_hits,
-            max_range_hits,
-            index_mode,
-            shards,
-        } = build_reference_index(&all_hits, pool.as_ref(), worker_threads, merge_start);
+        let index_build_start: Instant = Instant::now();
+        let index: ReferenceIndex =
+            ReferenceIndex::Transient(TransientReferenceIndex::from_sorted_hits_with_key_count(
+                &all_hits,
+                sorted_unique_minimizers,
+            ));
+        let target_ranges: usize = usize::from(!all_hits.is_empty());
+        let actual_ranges: usize = target_ranges;
+        let min_range_hits: usize = if all_hits.is_empty() {
+            0
+        } else {
+            all_hits.len()
+        };
+        let max_range_hits: usize = min_range_hits;
+        let index_mode: &'static str = "transient_flat";
+        let shards: usize = 0;
+
+        if let Some(start) = merge_start {
+            emit_progress(
+                "reference_merge",
+                &format!(
+                    "event=index_build_complete\tphase_ms={:.3}\thit_records={}\tunique_minimizers={}\tworker_threads={worker_threads}\tindex_mode={index_mode}\tshards={shards}",
+                    index_build_start.elapsed().as_secs_f64() * 1000.0,
+                    all_hits.len(),
+                    index.len(),
+                ),
+                start,
+            );
+        }
 
         if let Some(start) = merge_start {
             #[cfg(debug_assertions)]
@@ -707,5 +741,64 @@ impl ReferenceSketch {
             contig_names: Some(contig_names),
             index,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ani::{
+        FastaInput, ReferenceIndex, ReferenceSketch, RuntimeOptions, SketchParams,
+        DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MIN_FRAGMENT_LENGTH,
+        DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    };
+    use std::{env, fs, io, path::PathBuf, time::Instant};
+
+    #[test]
+    fn no_save_collect_builds_transient_reference_index() -> io::Result<()> {
+        let sequence: String = (0..300)
+            .map(|i| b"ACGTGCAATTCG"[i % b"ACGTGCAATTCG".len()] as char)
+            .collect();
+        let reference_path: PathBuf = env::temp_dir().join(format!(
+            "fasterani_transient_ref_{}_{}.fa",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::write(&reference_path, format!(">ref\n{sequence}\n"))?;
+        let references: Vec<FastaInput> = vec![FastaInput::from_path(
+            reference_path.to_string_lossy().into_owned(),
+        )];
+
+        let sketch: ReferenceSketch = ReferenceSketch::collect(
+            &references,
+            SketchParams {
+                kmer_size: DEFAULT_KMER_SIZE,
+                window_size: DEFAULT_WINDOW_SIZE,
+                fragment_length: DEFAULT_FRAGMENT_LENGTH,
+                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
+                split_n_run: DEFAULT_SPLIT_N_RUN,
+            },
+            RuntimeOptions::default(),
+        )?;
+
+        let first_minimizer = sketch
+            .contigs
+            .minimizers(0)
+            .and_then(|minimizers| minimizers.first())
+            .copied()
+            .expect("reference minimizer");
+        match &sketch.index {
+            ReferenceIndex::Transient(index) => {
+                let hits = index
+                    .get(&first_minimizer.hash)
+                    .expect("transient minimizer hit");
+                assert!(hits.iter().any(|hit| {
+                    hit.reference_contig_id == 0 && hit.position == first_minimizer.position
+                }));
+            }
+            _ => panic!("no-save collect should build transient index"),
+        }
+
+        fs::remove_file(reference_path)?;
+        Ok(())
     }
 }

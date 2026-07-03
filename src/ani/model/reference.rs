@@ -98,10 +98,19 @@ pub(crate) enum ReferenceContigs {
 }
 
 /// Lookup table from minimizer hash to all reference positions containing that minimizer.
+#[allow(dead_code)]
 pub(crate) enum ReferenceIndex {
+    Transient(TransientReferenceIndex),
     Hash(ReferenceHitMap),
     HashShards(Vec<ReferenceHashShard>),
     Mphf(MmapReferenceIndex),
+}
+
+/// Flat one-shot lookup table for freshly built no-save reference sketches.
+pub(crate) struct TransientReferenceIndex {
+    pub(crate) keys: Vec<MinimizerKey>,
+    pub(crate) hit_offsets: Vec<usize>,
+    pub(crate) hit_payloads: Vec<SeedHit>,
 }
 
 /// One key-range shard of an in-memory reference hit map.
@@ -216,9 +225,65 @@ pub(crate) struct ReferenceMemoryEstimate {
     pub(crate) mmap_reference_minimizer_bytes: usize,
 }
 
+impl TransientReferenceIndex {
+    pub(crate) fn from_sorted_hits_with_key_count(
+        hits: &[(MinimizerKey, SeedHit)],
+        unique_keys: usize,
+    ) -> Self {
+        let mut keys: Vec<MinimizerKey> = Vec::with_capacity(unique_keys);
+        let mut hit_offsets: Vec<usize> = Vec::with_capacity(unique_keys.saturating_add(1));
+        let mut hit_payloads: Vec<SeedHit> = Vec::with_capacity(hits.len());
+        let mut cursor: usize = 0usize;
+
+        while cursor < hits.len() {
+            let key: MinimizerKey = hits[cursor].0;
+            keys.push(key);
+            hit_offsets.push(hit_payloads.len());
+
+            while cursor < hits.len() && hits[cursor].0 == key {
+                hit_payloads.push(hits[cursor].1);
+                cursor += 1;
+            }
+        }
+        hit_offsets.push(hit_payloads.len());
+
+        Self {
+            keys,
+            hit_offsets,
+            hit_payloads,
+        }
+    }
+
+    pub(crate) fn get(&self, minimizer: &MinimizerKey) -> Option<&[SeedHit]> {
+        let slot: usize = self.keys.binary_search(minimizer).ok()?;
+        let start: usize = self.hit_offsets[slot];
+        let end: usize = self.hit_offsets[slot + 1];
+        self.hit_payloads.get(start..end)
+    }
+
+    pub(crate) fn hit_range_by_slot(
+        &self,
+        slot: usize,
+        minimizer: &MinimizerKey,
+    ) -> Option<(usize, usize)> {
+        if self.keys.get(slot)? != minimizer {
+            return None;
+        }
+        let start: usize = self.hit_offsets[slot];
+        let end: usize = self.hit_offsets[slot + 1];
+        Some((start, end - start))
+    }
+
+    pub(crate) fn hit_payload_range(&self, offset: usize, count: usize) -> Option<&[SeedHit]> {
+        let end: usize = offset.checked_add(count)?;
+        self.hit_payloads.get(offset..end)
+    }
+}
+
 impl ReferenceIndex {
     pub(crate) fn get(&self, minimizer: &MinimizerKey) -> Option<&[SeedHit]> {
         match self {
+            Self::Transient(index) => index.get(minimizer),
             Self::Hash(index) => index.get(minimizer).map(Vec::as_slice),
             Self::HashShards(shards) => {
                 let shard_index: usize =
@@ -242,6 +307,14 @@ impl ReferenceIndex {
     ) {
         out.clear();
         match self {
+            Self::Transient(index) => {
+                for &minimizer in minimizers {
+                    if let Ok(slot) = index.keys.binary_search(&minimizer) {
+                        out.push((slot as u64, minimizer));
+                    }
+                }
+                out.sort_unstable_by_key(|&(slot, _)| slot);
+            }
             Self::Mphf(index) => {
                 for &minimizer in minimizers {
                     if let Some(slot) = index.mphf.try_hash(&minimizer) {
@@ -259,26 +332,39 @@ impl ReferenceIndex {
         }
     }
 
+    pub(crate) fn has_slot_sorted_lookup(&self) -> bool {
+        matches!(self, Self::Transient(_) | Self::Mphf(_))
+    }
+
     pub(crate) fn hit_range_by_slot(
         &self,
         slot: usize,
         minimizer: &MinimizerKey,
-    ) -> Option<(u32, u32)> {
+    ) -> Option<(usize, usize)> {
         match self {
-            Self::Mphf(index) => index.hit_range_by_slot(slot, minimizer),
+            Self::Transient(index) => index.hit_range_by_slot(slot, minimizer),
+            Self::Mphf(index) => index
+                .hit_range_by_slot(slot, minimizer)
+                .map(|(offset, count)| (offset as usize, count as usize)),
             Self::Hash(_) | Self::HashShards(_) => None,
         }
     }
 
-    pub(crate) fn hit_payload_range(&self, offset: u32, count: u32) -> Option<&[SeedHit]> {
+    pub(crate) fn hit_payload_range(&self, offset: usize, count: usize) -> Option<&[SeedHit]> {
         match self {
-            Self::Mphf(index) => index.hit_payload_range(offset, count),
+            Self::Transient(index) => index.hit_payload_range(offset, count),
+            Self::Mphf(index) => {
+                let offset = u32::try_from(offset).ok()?;
+                let count = u32::try_from(count).ok()?;
+                index.hit_payload_range(offset, count)
+            }
             Self::Hash(_) | Self::HashShards(_) => None,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         match self {
+            Self::Transient(index) => index.keys.len(),
             Self::Hash(index) => index.len(),
             Self::HashShards(shards) => shards.iter().map(|shard| shard.index.len()).sum(),
             Self::Mphf(index) => index.key_count,
@@ -294,6 +380,16 @@ impl ReferenceIndex {
         let mut total_unique_minimizers: usize = 0usize;
 
         match self {
+            Self::Transient(index) => {
+                for hit_count in index
+                    .hit_offsets
+                    .windows(2)
+                    .map(|offsets| offsets[1] - offsets[0])
+                {
+                    *histogram.entry(hit_count).or_default() += 1;
+                    total_unique_minimizers += 1;
+                }
+            }
             Self::Hash(index) => {
                 for hits in index.values() {
                     *histogram.entry(hits.len()).or_default() += 1;
@@ -340,5 +436,86 @@ impl ReferenceIndex {
         }
 
         threshold
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MinimizerKey, ReferenceHitMap, ReferenceIndex, SeedHit, TransientReferenceIndex};
+
+    fn hit(reference_contig_id: u32, position: u32) -> SeedHit {
+        SeedHit {
+            reference_contig_id,
+            position,
+        }
+    }
+
+    #[test]
+    fn transient_reference_index_returns_present_key_hits() {
+        let hits: Vec<(MinimizerKey, SeedHit)> = vec![
+            (10, hit(0, 1)),
+            (10, hit(0, 3)),
+            (25, hit(1, 8)),
+            (40, hit(2, 13)),
+        ];
+        let index = TransientReferenceIndex::from_sorted_hits_with_key_count(&hits, 3);
+
+        assert_eq!(index.get(&10), Some([hit(0, 1), hit(0, 3)].as_slice()));
+        assert_eq!(index.get(&25), Some([hit(1, 8)].as_slice()));
+    }
+
+    #[test]
+    fn transient_reference_index_returns_none_for_missing_key() {
+        let hits: Vec<(MinimizerKey, SeedHit)> = vec![(10, hit(0, 1)), (25, hit(1, 8))];
+        let index = TransientReferenceIndex::from_sorted_hits_with_key_count(&hits, 2);
+
+        assert_eq!(index.get(&11), None);
+    }
+
+    #[test]
+    fn transient_reference_index_groups_repeated_keys_into_offsets() {
+        let hits: Vec<(MinimizerKey, SeedHit)> = vec![
+            (7, hit(0, 1)),
+            (7, hit(0, 2)),
+            (7, hit(0, 3)),
+            (9, hit(1, 5)),
+        ];
+        let index = TransientReferenceIndex::from_sorted_hits_with_key_count(&hits, 2);
+
+        assert_eq!(index.keys, vec![7, 9]);
+        assert_eq!(index.hit_offsets, vec![0, 3, 4]);
+        assert_eq!(
+            index.hit_payloads,
+            vec![hit(0, 1), hit(0, 2), hit(0, 3), hit(1, 5)]
+        );
+    }
+
+    #[test]
+    fn transient_reference_index_frequency_threshold_matches_hash() {
+        let hits: Vec<(MinimizerKey, SeedHit)> = vec![
+            (5, hit(0, 1)),
+            (5, hit(0, 2)),
+            (5, hit(0, 3)),
+            (8, hit(1, 1)),
+            (8, hit(1, 2)),
+            (13, hit(2, 1)),
+        ];
+        let transient = ReferenceIndex::Transient(
+            TransientReferenceIndex::from_sorted_hits_with_key_count(&hits, 3),
+        );
+        let mut hash: ReferenceHitMap = ReferenceHitMap::default();
+        for (key, hit) in hits {
+            hash.entry(key).or_default().push(hit);
+        }
+        let hash = ReferenceIndex::Hash(hash);
+
+        assert_eq!(
+            transient.frequency_threshold(50.0),
+            hash.frequency_threshold(50.0)
+        );
+        assert_eq!(
+            transient.frequency_threshold(100.0),
+            hash.frequency_threshold(100.0)
+        );
     }
 }
