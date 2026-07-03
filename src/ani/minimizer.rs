@@ -39,8 +39,10 @@ pub(crate) struct Fenwick {
 
 impl Fenwick {
     pub(crate) fn reset(&mut self, len: usize) {
+        let tree_len: usize = len.saturating_add(1);
         self.tree.clear();
-        self.tree.resize(len + 1, 0);
+        self.tree.reserve(tree_len);
+        self.tree.resize(tree_len, 0);
         self.total = 0;
     }
 
@@ -116,15 +118,22 @@ impl SlidingSketchCounter {
         query_minimizers: &[MinimizerKey],
         reference_minimizers: &[ReferenceMinimizer],
     ) {
+        let coordinate_capacity: usize = query_minimizers
+            .len()
+            .saturating_add(reference_minimizers.len());
+
         self.hashes.clear();
+        self.hashes.reserve(coordinate_capacity);
         self.hashes.extend_from_slice(query_minimizers);
         self.hashes
             .extend(reference_minimizers.iter().map(|minimizer| minimizer.hash));
         self.hashes.sort_unstable();
         self.hashes.dedup();
 
+        let coordinate_count: usize = self.hashes.len();
         self.query_present.clear();
-        self.query_present.resize(self.hashes.len(), false);
+        self.query_present.reserve(coordinate_count);
+        self.query_present.resize(coordinate_count, false);
 
         for minimizer in query_minimizers {
             let index = self
@@ -135,7 +144,8 @@ impl SlidingSketchCounter {
         }
 
         self.reference_counts.clear();
-        self.reference_counts.resize(self.hashes.len(), 0);
+        self.reference_counts.reserve(coordinate_count);
+        self.reference_counts.resize(coordinate_count, 0);
         self.sketch_size = query_minimizers.len();
         self.clear();
     }

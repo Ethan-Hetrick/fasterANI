@@ -45,6 +45,8 @@ impl ReferenceSketch {
             }
         } else {
             hit_ranges.clear();
+            hit_ranges.reserve(slot_sorted_minimizers.len());
+            let mut accepted_hit_count: usize = 0;
             for &(slot, minimizer) in slot_sorted_minimizers.iter() {
                 let hit_range = self.index.hit_range_by_slot(slot as usize, &minimizer);
                 #[cfg(debug_assertions)]
@@ -57,11 +59,13 @@ impl ReferenceSketch {
                 if let Some((offset, count)) = hit_range {
                     if (count as usize) < frequency_threshold {
                         hit_ranges.push((offset, count));
+                        accepted_hit_count = accepted_hit_count.saturating_add(count as usize);
                     }
                 }
             }
 
             hit_ranges.sort_unstable_by_key(|&(offset, _)| offset);
+            seed_hits.reserve(accepted_hit_count);
             for &(offset, count) in hit_ranges.iter() {
                 if let Some(hits) = self.index.hit_payload_range(offset, count) {
                     seed_hits.extend_from_slice(hits);
