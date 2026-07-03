@@ -8,13 +8,12 @@ use std::{
 };
 
 use crate::ani::{
-    default_max_shard_minimizers_for_runtime, describe_field_parsing_error, is_stdin_path,
-    load_params_file, validate_fragment_length, validate_kmer_size, validate_mash_confidence,
-    validate_mash_threshold, validate_max_shard_minimizers, validate_window_size, FastaInput,
-    IndexBuildMode, ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
-    DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE,
-    DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
-    DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    is_stdin_path, load_params_file, validate_fragment_length, validate_kmer_size,
+    validate_mash_confidence, validate_mash_threshold, validate_max_shard_minimizers,
+    validate_window_size, FastaInput, IndexBuildMode, ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH,
+    DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE,
+    DEFAULT_MASH_CONFIDENCE, DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH,
+    DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
 };
 
 /// Parsed command-line arguments.
@@ -41,9 +40,7 @@ pub(crate) struct CliArgs {
     pub(crate) mash_confidence: f64,
     /// Minimum run-length of ambiguous `N` bases that splits a contig; `0` disables.
     pub(crate) split_n_run: usize,
-    pub(crate) max_memory_bytes: Option<u64>,
     pub(crate) max_shard_minimizers: usize,
-    pub(crate) max_concurrent_shards: Option<usize>,
     pub(crate) shard_filter: Option<HashSet<usize>>,
     pub(crate) index_build_mode: IndexBuildMode,
 }
@@ -126,8 +123,6 @@ Sketch database / sharding:
   --bgzip                      Enable if reference sketch input is bgzip-compressed.
   --max-shard-minimizers <n>   Maximum estimated reference minimizers per shard
                                  default: 500_000_000, producing ~10 GiB shards.
-  --max-concurrent-shards <n>  Compatibility option; sharded queries now prefetch
-                                 one shard at a time and ignore this value.
   --shards <list>              Comma-separated shard indices and ranges to query,
                                  e.g. 1,3,5-8. Queries all shards when omitted.
                                  Requires --reference-sketch.
@@ -135,7 +130,6 @@ Sketch database / sharding:
 
 Resources:
   --threads <n>                Worker threads, >= 1 (default 1).
-  --max-memory-gb <gb>         Soft memory ceiling in GB (default: unlimited).
   --tmp <dir>                  Directory for temporary shard files.
   -h, --help                   Show help.
   -v, --version                Show version."
@@ -345,22 +339,6 @@ impl RuntimeStartupOutput {
                 sources.split_n_run,
             );
         }
-        if let Some(max_memory_bytes) = args.max_memory_bytes {
-            push_toml_number(
-                &mut entries,
-                "max_memory_gb",
-                max_memory_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-                sources.max_memory_gb,
-            );
-        }
-        if let Some(max_concurrent_shards) = args.max_concurrent_shards {
-            push_toml_number(
-                &mut entries,
-                "max_concurrent_shards",
-                max_concurrent_shards,
-                sources.max_concurrent_shards,
-            );
-        }
         if sources.max_shard_minimizers.is_some()
             && args.max_shard_minimizers != DEFAULT_MAX_SHARD_MINIMIZERS
         {
@@ -418,9 +396,7 @@ struct ParameterSources {
     mash_threshold: Option<ParameterSource>,
     mash_confidence: Option<ParameterSource>,
     split_n_run: Option<ParameterSource>,
-    max_memory_gb: Option<ParameterSource>,
     max_shard_minimizers: Option<ParameterSource>,
-    max_concurrent_shards: Option<ParameterSource>,
     shards: Option<ParameterSource>,
     index_build_mode: Option<ParameterSource>,
     reference_sketch: Option<ParameterSource>,
@@ -711,21 +687,6 @@ fn add_query_list(
     Ok(())
 }
 
-fn max_memory_gb_to_bytes(value: f64, source: &str) -> io::Result<u64> {
-    if !value.is_finite() || value <= 0.0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            describe_field_parsing_error(
-                source,
-                &value.to_string(),
-                "must be a positive finite number",
-            ),
-        ));
-    }
-
-    Ok((value * 1024.0 * 1024.0 * 1024.0) as u64)
-}
-
 fn parse_shard_filter(s: &str) -> io::Result<HashSet<usize>> {
     let mut indices = HashSet::new();
     for token in s.split(',') {
@@ -810,8 +771,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut mash_threshold: f64 = DEFAULT_MIN_PERCENT_IDENTITY;
     let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
-    let mut max_memory_bytes: Option<u64> = None;
-    let mut max_concurrent_shards: Option<usize> = None;
     let mut max_shard_minimizers: Option<usize> = None;
     let mut shard_filter: Option<HashSet<usize>> = None;
     let mut index_build_mode: IndexBuildMode = IndexBuildMode::Auto;
@@ -956,17 +915,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         split_n_run = value;
         sources.split_n_run = Some(ParameterSource::ParamsFile);
     }
-    if let Some(value) = params_file_config.max_memory_gb {
-        max_memory_bytes = Some(max_memory_gb_to_bytes(value, "max_memory_gb")?);
-        sources.max_memory_gb = Some(ParameterSource::ParamsFile);
-    }
     if let Some(value) = params_file_config.max_shard_minimizers {
         max_shard_minimizers = Some(value);
         sources.max_shard_minimizers = Some(ParameterSource::ParamsFile);
-    }
-    if let Some(value) = params_file_config.max_concurrent_shards {
-        max_concurrent_shards = Some(value);
-        sources.max_concurrent_shards = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.shards.as_ref() {
         shard_filter = Some(parse_shard_filter(value)?);
@@ -1154,28 +1105,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 sources.mash_confidence = Some(ParameterSource::Cli);
                 validate_mash_confidence(mash_confidence)?;
             }
-            "--max-concurrent-shards" => {
-                let value = args.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--max-concurrent-shards requires a value",
-                    )
-                })?;
-                let n = value.parse::<usize>().map_err(|err| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid --max-concurrent-shards value {value:?}: {err}"),
-                    )
-                })?;
-                if n == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--max-concurrent-shards must be at least 1",
-                    ));
-                }
-                max_concurrent_shards = Some(n);
-                sources.max_concurrent_shards = Some(ParameterSource::Cli);
-            }
             "--shards" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--shards requires a value")
@@ -1251,16 +1180,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     ));
                 }
                 sources.threads = Some(ParameterSource::Cli);
-            }
-            "--max-memory-gb" => {
-                let value = args.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--max-memory-gb requires a value",
-                    )
-                })?;
-                max_memory_bytes = Some(parse_max_memory_gb(&value)?);
-                sources.max_memory_gb = Some(ParameterSource::Cli);
             }
             "--freq-threshold-percent" => {
                 let value = args.next().ok_or_else(|| {
@@ -1462,12 +1381,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             "--minmer-count must be at least 1",
         ));
     }
-    if max_concurrent_shards == Some(0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--max-concurrent-shards must be at least 1",
-        ));
-    }
     if shard_filter.is_some() && sketch_path.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1510,8 +1423,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         ));
     }
 
-    let max_shard_minimizers: usize = max_shard_minimizers
-        .unwrap_or_else(|| default_max_shard_minimizers_for_runtime(threads, max_memory_bytes));
+    let max_shard_minimizers: usize = max_shard_minimizers.unwrap_or(DEFAULT_MAX_SHARD_MINIMIZERS);
     validate_max_shard_minimizers(max_shard_minimizers)?;
 
     let cli_args = CliArgs {
@@ -1536,8 +1448,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         mash_threshold,
         mash_confidence,
         split_n_run,
-        max_memory_bytes,
-        max_concurrent_shards,
         max_shard_minimizers,
         shard_filter,
         index_build_mode,
@@ -1591,21 +1501,4 @@ mod tests {
     fn parse_shard_filter_rejects_non_numeric() {
         assert!(parse_shard_filter("1,foo,3").is_err());
     }
-}
-
-fn parse_max_memory_gb(value: &str) -> io::Result<u64> {
-    let gb: f64 = value.parse::<f64>().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid --max-memory-gb value {value:?}: {err}"),
-        )
-    })?;
-    if !gb.is_finite() || gb <= 0.0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--max-memory-gb must be a positive finite number",
-        ));
-    }
-
-    Ok((gb * 1024.0 * 1024.0 * 1024.0) as u64)
 }

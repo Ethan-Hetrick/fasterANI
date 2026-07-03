@@ -2,7 +2,7 @@
 
 #[cfg(debug_assertions)]
 use std::{env, mem::size_of};
-use std::{fs, io, time::Instant};
+use std::{fs, time::Instant};
 
 use crate::ani::CliArgs;
 #[cfg(debug_assertions)]
@@ -12,7 +12,6 @@ use crate::ani::{MinimizerKey, ReferenceMinimizer, SeedHit};
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RuntimeOptions {
     pub(crate) progress_enabled: bool,
-    pub(crate) max_memory_bytes: Option<u64>,
     pub(crate) worker_threads: usize,
 }
 
@@ -52,10 +51,6 @@ pub(crate) fn memory_mib(bytes: usize) -> f64 {
     bytes as f64 / 1024.0 / 1024.0
 }
 
-pub(crate) fn memory_gib(bytes: u64) -> f64 {
-    bytes as f64 / 1024.0 / 1024.0 / 1024.0
-}
-
 fn current_rss_kb() -> i64 {
     let Ok(status) = fs::read_to_string("/proc/self/status") else {
         return peak_rss_kb();
@@ -74,37 +69,6 @@ fn current_rss_kb() -> i64 {
     }
 
     peak_rss_kb()
-}
-
-fn current_rss_bytes() -> Option<u64> {
-    let rss_kb: i64 = current_rss_kb();
-    if rss_kb <= 0 {
-        None
-    } else {
-        Some(rss_kb as u64 * 1024)
-    }
-}
-
-pub(crate) fn check_memory_limit(context: &str, options: RuntimeOptions) -> io::Result<()> {
-    let Some(limit_bytes) = options.max_memory_bytes else {
-        return Ok(());
-    };
-    let Some(rss_bytes) = current_rss_bytes() else {
-        return Ok(());
-    };
-
-    if rss_bytes > limit_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::OutOfMemory,
-            format!(
-                "ERROR: {context} exceeded --max-memory-gb: rss_gb={:.3} limit_gb={:.3}",
-                memory_gib(rss_bytes),
-                memory_gib(limit_bytes)
-            ),
-        ));
-    }
-
-    Ok(())
 }
 
 pub(crate) fn emit_progress(stage: &str, message: &str, start: Instant) {

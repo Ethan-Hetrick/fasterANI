@@ -10,13 +10,13 @@ use std::{
 };
 
 use crate::ani::{
-    align_up, check_memory_limit, checked_section_end, decompress_to_scratch, emit_progress,
-    is_gzip_path, load_contig_name_sidecar, slice_as_bytes, write_contig_name_sidecar,
-    write_padding, CachedReferenceMetadata, ContigRecord, MinimizerKey, MmapFile,
-    MmapReferenceContigs, MmapReferenceIndex, ReferenceContigName, ReferenceContigs, ReferenceFile,
-    ReferenceHitMap, ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions,
-    ScratchFile, SeedHit, SketchOutput, SketchParams, SKETCH_KEY_MODE,
-    SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
+    align_up, checked_section_end, decompress_to_scratch, emit_progress, is_gzip_path,
+    load_contig_name_sidecar, slice_as_bytes, write_contig_name_sidecar, write_padding,
+    CachedReferenceMetadata, ContigRecord, MinimizerKey, MmapFile, MmapReferenceContigs,
+    MmapReferenceIndex, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
+    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
+    SketchOutput, SketchParams, SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC,
+    SKETCH_VERSION,
 };
 #[cfg(test)]
 use crate::ani::{memory_mib, sketch_reference_name};
@@ -70,8 +70,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("sketch save start", runtime_options)?;
-
         let keys: Vec<MinimizerKey> = index.keys().copied().collect::<Vec<_>>();
         if runtime_options.progress_enabled {
             emit_progress(
@@ -80,7 +78,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("sketch save after collecting keys", runtime_options)?;
         let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
         if runtime_options.progress_enabled {
             emit_progress(
@@ -89,7 +86,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("sketch save after building MPH", runtime_options)?;
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
         let mut hit_offsets: Vec<u32> = vec![0u32; keys.len()];
         let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];
@@ -137,8 +133,6 @@ impl ReferenceSketch {
             );
             emit_progress("sketch_save", &progress_message, save_start);
         }
-        check_memory_limit("sketch save after allocating arrays", runtime_options)?;
-
         for (key_index, (key, hits)) in index.iter().enumerate() {
             let slot: usize = mphf.hash(key) as usize;
             slot_keys[slot] = *key;
@@ -170,7 +164,6 @@ impl ReferenceSketch {
                         save_start,
                     );
                 }
-                check_memory_limit("sketch save while packing index", runtime_options)?;
             }
         }
 
@@ -212,7 +205,6 @@ impl ReferenceSketch {
                         save_start,
                     );
                 }
-                check_memory_limit("sketch save while packing contigs", runtime_options)?;
             }
         }
 
@@ -278,7 +270,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("sketch save after metadata encode", runtime_options)?;
         let metadata_end: usize = SKETCH_MAGIC
             .len()
             .checked_add(size_of::<u64>())
@@ -391,7 +382,7 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("sketch save complete", runtime_options)
+        Ok(())
     }
 
     /// Load a previously saved sketch cache and mmap its hit arrays.
@@ -417,8 +408,6 @@ impl ReferenceSketch {
                 load_start,
             );
         }
-        check_memory_limit("sketch load start", runtime_options)?;
-
         let decompressed_sketch: Option<ScratchFile> = if is_gzip_path(path) {
             if runtime_options.progress_enabled {
                 emit_progress(
@@ -487,8 +476,6 @@ impl ReferenceSketch {
                 load_start,
             );
         }
-        check_memory_limit("sketch load after metadata", runtime_options)?;
-
         if cached.dust_enabled {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -571,8 +558,6 @@ impl ReferenceSketch {
                 load_start,
             );
         }
-        check_memory_limit("sketch load complete", runtime_options)?;
-
         let contig_names: Option<Vec<ReferenceContigName>> = if load_contig_names {
             Some(load_contig_name_sidecar(path, cached.contig_count)?)
         } else {
@@ -644,8 +629,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("streaming sketch save start", runtime_options)?;
-
         let keys: Vec<MinimizerKey> = index.keys().copied().collect::<Vec<_>>();
         let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
@@ -664,11 +647,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit(
-            "streaming sketch save after allocating arrays",
-            runtime_options,
-        )?;
-
         for (key_index, (key, hits)) in index.iter().enumerate() {
             let slot: usize = mphf.hash(key) as usize;
             slot_keys[slot] = *key;
@@ -700,7 +678,6 @@ impl ReferenceSketch {
                         save_start,
                     );
                 }
-                check_memory_limit("streaming sketch save while packing index", runtime_options)?;
             }
         }
 
@@ -855,7 +832,7 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("streaming sketch save complete", runtime_options)
+        Ok(())
     }
 }
 

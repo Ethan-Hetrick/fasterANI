@@ -14,7 +14,7 @@ use std::{
 use noodles::fasta;
 
 use crate::ani::{
-    check_memory_limit, emit_progress, fastani_compatible_fragment_mode, final_ani_computation,
+    emit_progress, fastani_compatible_fragment_mode, final_ani_computation,
     is_no_usable_fragments_error, legacy_sketch_path, manifest_path,
     map_query_to_reference_parallel, open_fasta_reader, parse_cli_args,
     performance_metrics_enabled, shard_entry_path, AniComputation, CliArgs, MappingOutput,
@@ -23,8 +23,8 @@ use crate::ani::{
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
-    memory_gib, memory_mib, peak_rss_kb, MappingMetrics, QueryMemoryEstimate,
-    ReferenceMemoryEstimate, SEED_HIT_HISTOGRAM_OVERFLOW_LABEL, SEED_HIT_HISTOGRAM_UPPER_BOUNDS,
+    memory_mib, peak_rss_kb, MappingMetrics, QueryMemoryEstimate, ReferenceMemoryEstimate,
+    SEED_HIT_HISTOGRAM_OVERFLOW_LABEL, SEED_HIT_HISTOGRAM_UPPER_BOUNDS,
 };
 
 struct QueryMappingStats {
@@ -51,6 +51,16 @@ struct LoadedShard {
     pub(crate) shard_index: usize,
     pub(crate) shard_offset: usize,
     pub(crate) sketch: ReferenceSketch,
+}
+
+struct PreloadedQuery {
+    pub(crate) query_index: usize,
+    pub(crate) query_path: String,
+    pub(crate) query_start: Instant,
+    pub(crate) query_file: QueryFile,
+    pub(crate) fragment_count: usize,
+    pub(crate) minimizer_count: usize,
+    pub(crate) seed_minimizer_count: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -332,10 +342,8 @@ pub fn run() -> io::Result<()> {
     let performance_metrics_enabled: bool = performance_metrics_enabled(&args);
     let runtime_options: RuntimeOptions = RuntimeOptions {
         progress_enabled,
-        max_memory_bytes: args.max_memory_bytes,
         worker_threads: args.threads,
     };
-    check_memory_limit("startup", runtime_options)?;
     if !fastani_compatible_fragment_mode(
         args.fragment_length,
         args.fragment_stride,
@@ -447,227 +455,209 @@ pub fn run() -> io::Result<()> {
         None => None,
     };
 
-    for (query_index, query) in args.queries.iter().enumerate() {
-        let query_path: &str = query.label.as_str();
-        if progress_enabled {
-            emit_progress(
-                "query",
-                &format!(
-                    "event=start\tquery_done={query_index}\tquery_total={}\tpath={query_path}",
-                    args.queries.len()
-                ),
-                total_start,
-            );
-        }
-        check_memory_limit("before query", runtime_options)?;
-
-        let query_start: Instant = Instant::now();
-        let mut reader_query: fasta::io::Reader<Box<dyn io::BufRead>> =
-            open_fasta_reader(&query.open)?;
-        let query_file: QueryFile = match QueryFile::collect(
-            &mut reader_query,
-            args.kmer_size,
-            args.window_size,
-            args.minmer_count,
-            args.fragment_length,
-            args.fragment_stride,
-            args.min_fragment_length,
-            args.split_n_run,
-        ) {
-            Ok(query_file) => query_file,
-            Err(error) if args.queries.len() > 1 && is_no_usable_fragments_error(&error) => {
-                query_elapsed += query_start.elapsed();
-                skipped_queries += 1;
-                if progress_enabled {
-                    eprintln!("WARNING\tskipping query with no usable fragments\t{query_path}");
-                    emit_progress(
-                        "query",
-                        &format!(
-                            "event=skipped\tquery_done={}\tquery_total={}\tpath={query_path}",
-                            query_index + 1,
-                            args.queries.len()
+    if let SketchDatabase::Sharded { prefix, manifest } = &reference_database {
+        let active_shards: Vec<_> = match &args.shard_filter {
+            Some(filter) => {
+                let manifest_indices: HashSet<usize> = manifest
+                    .shards
+                    .iter()
+                    .map(|shard| shard.shard_index)
+                    .collect();
+                let mut unknown: Vec<usize> = filter
+                    .iter()
+                    .copied()
+                    .filter(|index| !manifest_indices.contains(index))
+                    .collect();
+                if !unknown.is_empty() {
+                    unknown.sort_unstable();
+                    let mut available: Vec<usize> = manifest_indices.iter().copied().collect();
+                    available.sort_unstable();
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "--shards specified unknown shard indices: {}; available: {}",
+                            unknown
+                                .iter()
+                                .map(|index| index.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            available
+                                .iter()
+                                .map(|index| index.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ),
-                        total_start,
-                    );
+                    ));
                 }
-                check_memory_limit("after skipped query", runtime_options)?;
-                continue;
+                manifest
+                    .shards
+                    .iter()
+                    .cloned()
+                    .filter(|shard| filter.contains(&shard.shard_index))
+                    .collect()
             }
-            Err(error) => return Err(error),
+            None => manifest.shards.clone(),
         };
-        query_elapsed += query_start.elapsed();
 
-        let query_fragment_count: usize = query_file.fragments.len();
-        let query_minimizer_count: usize = query_file.total_minimizers();
-        let query_seed_minimizer_count: usize = query_file.total_seed_minimizers();
-        total_query_fragments_all += query_fragment_count;
-        total_query_minimizers_all += query_minimizer_count;
-        total_query_seed_minimizers_all += query_seed_minimizer_count;
-
-        #[cfg(debug_assertions)]
-        {
-            if performance_metrics_enabled {
-                let query_memory: QueryMemoryEstimate = query_file.memory_estimate();
-                let query_owned_bytes: usize = query_memory.fragment_struct_bytes
-                    + query_memory.query_minimizer_vec_bytes
-                    + query_memory.seed_minimizer_vec_bytes;
-                _total_query_owned_bytes_all += query_owned_bytes;
-                max_query_owned_bytes = max_query_owned_bytes.max(query_owned_bytes);
-            }
+        let mut reference_file_offsets: Vec<usize> = Vec::with_capacity(active_shards.len());
+        let mut next_reference_file_offset: usize = 0usize;
+        let mut reference_contig_offsets: Vec<usize> = Vec::with_capacity(active_shards.len());
+        let mut next_reference_contig_offset: usize = 0usize;
+        for shard in &active_shards {
+            reference_file_offsets.push(next_reference_file_offset);
+            next_reference_file_offset += shard.reference_count;
+            reference_contig_offsets.push(next_reference_contig_offset);
+            next_reference_contig_offset += shard.reference_contigs;
         }
 
-        match &reference_database {
-            SketchDatabase::Single(reference_sketch) => {
-                let frequency_threshold: usize = reference_sketch
-                    .index
-                    .frequency_threshold(args.freq_threshold_percent);
-                let stats: QueryMappingStats = map_query_against_reference_sketch(
-                    reference_sketch,
-                    &query_file,
-                    query_path,
-                    &args,
-                    frequency_threshold,
-                    performance_metrics_enabled,
-                    &mut *output,
-                    mapping_stats_output.as_deref_mut(),
-                )?;
-                mapping_elapsed += stats.mapping_elapsed;
-                summary_elapsed += stats.summary_elapsed;
-                mapping_count += stats.mapping_count;
-                emitted_pairs += stats.emitted_pairs;
-                #[cfg(debug_assertions)]
-                {
-                    mapping_detail_metrics.merge(stats.metrics);
-                    max_mapping_result_bytes =
-                        max_mapping_result_bytes.max(stats.max_mapping_result_bytes);
+        let mut preloaded_queries: Vec<PreloadedQuery> = Vec::with_capacity(args.queries.len());
+        for (query_index, query) in args.queries.iter().enumerate() {
+            let query_path: String = query.label.clone();
+            if progress_enabled {
+                emit_progress(
+                    "query",
+                    &format!(
+                        "event=start\tquery_done={query_index}\tquery_total={}\tpath={query_path}",
+                        args.queries.len()
+                    ),
+                    total_start,
+                );
+            }
+
+            let query_start: Instant = Instant::now();
+            let mut reader_query: fasta::io::Reader<Box<dyn io::BufRead>> =
+                open_fasta_reader(&query.open)?;
+            let query_file: QueryFile = match QueryFile::collect(
+                &mut reader_query,
+                args.kmer_size,
+                args.window_size,
+                args.minmer_count,
+                args.fragment_length,
+                args.fragment_stride,
+                args.min_fragment_length,
+                args.split_n_run,
+            ) {
+                Ok(query_file) => query_file,
+                Err(error) if args.queries.len() > 1 && is_no_usable_fragments_error(&error) => {
+                    query_elapsed += query_start.elapsed();
+                    skipped_queries += 1;
+                    if progress_enabled {
+                        eprintln!("WARNING\tskipping query with no usable fragments\t{query_path}");
+                        emit_progress(
+                            "query",
+                            &format!(
+                                "event=skipped\tquery_done={}\tquery_total={}\tpath={query_path}",
+                                query_index + 1,
+                                args.queries.len()
+                            ),
+                            total_start,
+                        );
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            query_elapsed += query_start.elapsed();
+
+            let fragment_count: usize = query_file.fragments.len();
+            let minimizer_count: usize = query_file.total_minimizers();
+            let seed_minimizer_count: usize = query_file.total_seed_minimizers();
+            total_query_fragments_all += fragment_count;
+            total_query_minimizers_all += minimizer_count;
+            total_query_seed_minimizers_all += seed_minimizer_count;
+
+            #[cfg(debug_assertions)]
+            {
+                if performance_metrics_enabled {
+                    let query_memory: QueryMemoryEstimate = query_file.memory_estimate();
+                    let query_owned_bytes: usize = query_memory.fragment_struct_bytes
+                        + query_memory.query_minimizer_vec_bytes
+                        + query_memory.seed_minimizer_vec_bytes;
+                    _total_query_owned_bytes_all += query_owned_bytes;
+                    max_query_owned_bytes = max_query_owned_bytes.max(query_owned_bytes);
                 }
             }
-            SketchDatabase::Sharded { prefix, manifest } => {
-                let active_shards: Vec<_> = match &args.shard_filter {
-                    Some(filter) => {
-                        let manifest_indices: HashSet<usize> = manifest
-                            .shards
-                            .iter()
-                            .map(|shard| shard.shard_index)
-                            .collect();
-                        let mut unknown: Vec<usize> = filter
-                            .iter()
-                            .copied()
-                            .filter(|index| !manifest_indices.contains(index))
-                            .collect();
-                        if !unknown.is_empty() {
-                            unknown.sort_unstable();
-                            let mut available: Vec<usize> =
-                                manifest_indices.iter().copied().collect();
-                            available.sort_unstable();
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                format!(
-                                    "--shards specified unknown shard indices: {}; available: {}",
-                                    unknown
-                                        .iter()
-                                        .map(|index| index.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                    available
-                                        .iter()
-                                        .map(|index| index.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ),
-                            ));
-                        }
-                        manifest
-                            .shards
-                            .iter()
-                            .cloned()
-                            .filter(|shard| filter.contains(&shard.shard_index))
-                            .collect()
+
+            preloaded_queries.push(PreloadedQuery {
+                query_index,
+                query_path,
+                query_start,
+                query_file,
+                fragment_count,
+                minimizer_count,
+                seed_minimizer_count,
+            });
+        }
+
+        if !preloaded_queries.is_empty() {
+            let mut per_query_mapping_results: Vec<Vec<MappingResult>> =
+                (0..preloaded_queries.len()).map(|_| Vec::new()).collect();
+            let mut all_reference_files: Vec<ReferenceFile> =
+                Vec::with_capacity(next_reference_file_offset);
+            let mut all_reference_contig_names: Option<Vec<ReferenceContigName>> =
+                mapping_stats_requested.then(|| Vec::with_capacity(next_reference_contig_offset));
+
+            let (tx, rx) = mpsc::sync_channel::<io::Result<LoadedShard>>(1);
+            let loader_active_shards = active_shards.clone();
+            let loader_prefix = prefix.clone();
+            let loader_tmp_dir = args.tmp_dir.clone();
+            let loader_params = SketchParams {
+                kmer_size: args.kmer_size,
+                window_size: args.window_size,
+                fragment_length: args.fragment_length,
+                min_fragment_length: args.min_fragment_length,
+                split_n_run: args.split_n_run,
+            };
+            let active_shard_count = active_shards.len();
+            let loader_handle = thread::spawn(move || {
+                for (shard_offset, shard) in loader_active_shards.iter().enumerate() {
+                    if progress_enabled {
+                        emit_progress(
+                            "shard_load",
+                            &format!(
+                                "event=start\tshard={}\tshards_total={}\tfilename={}\tloader=prefetch",
+                                shard.shard_index, active_shard_count, shard.filename
+                            ),
+                            total_start,
+                        );
                     }
-                    None => manifest.shards.clone(),
-                };
-                let mut query_reference_files: Vec<ReferenceFile> =
-                    Vec::with_capacity(active_shards.iter().map(|s| s.reference_count).sum());
-                let mut query_reference_contig_names: Option<Vec<ReferenceContigName>> =
-                    mapping_stats_requested.then(|| {
-                        Vec::with_capacity(active_shards.iter().map(|s| s.reference_contigs).sum())
+                    let load_result = ReferenceSketch::load(
+                        &shard_entry_path(&loader_prefix, shard),
+                        loader_params,
+                        mapping_stats_requested,
+                        loader_tmp_dir.as_deref(),
+                        runtime_options,
+                    )
+                    .map(|sketch| {
+                        sketch.prefetch_sequential();
+                        LoadedShard {
+                            shard_index: shard.shard_index,
+                            shard_offset,
+                            sketch,
+                        }
                     });
 
-                let mut query_mapping_results: Vec<MappingResult> =
-                    Vec::with_capacity(active_shards.iter().map(|s| s.reference_contigs * 2).sum());
-
-                let mut reference_file_offsets: Vec<usize> =
-                    Vec::with_capacity(active_shards.len());
-                let mut next_reference_file_offset: usize = 0usize;
-                let mut reference_contig_offsets: Vec<usize> =
-                    Vec::with_capacity(active_shards.len());
-                let mut next_reference_contig_offset: usize = 0usize;
-                for shard in &active_shards {
-                    reference_file_offsets.push(next_reference_file_offset);
-                    next_reference_file_offset += shard.reference_count;
-                    reference_contig_offsets.push(next_reference_contig_offset);
-                    next_reference_contig_offset += shard.reference_contigs;
-                }
-
-                let (tx, rx) = mpsc::sync_channel::<io::Result<LoadedShard>>(1);
-                let loader_active_shards = active_shards.clone();
-                let loader_prefix = prefix.clone();
-                let loader_tmp_dir = args.tmp_dir.clone();
-                let loader_params = SketchParams {
-                    kmer_size: args.kmer_size,
-                    window_size: args.window_size,
-                    fragment_length: args.fragment_length,
-                    min_fragment_length: args.min_fragment_length,
-                    split_n_run: args.split_n_run,
-                };
-                let active_shard_count = active_shards.len();
-                let loader_handle = thread::spawn(move || {
-                    for (shard_offset, shard) in loader_active_shards.iter().enumerate() {
-                        if progress_enabled {
-                            emit_progress(
-                                "shard_load",
-                                &format!(
-                                    "event=start\tquery_done={query_index}\tshard={}\tshards_total={}\tfilename={}\tloader=prefetch",
-                                    shard.shard_index,
-                                    active_shard_count,
-                                    shard.filename
-                                ),
-                                total_start,
-                            );
-                        }
-                        let load_result = ReferenceSketch::load(
-                            &shard_entry_path(&loader_prefix, shard),
-                            loader_params,
-                            mapping_stats_requested,
-                            loader_tmp_dir.as_deref(),
-                            runtime_options,
-                        )
-                        .map(|sketch| {
-                            sketch.prefetch_sequential();
-                            LoadedShard {
-                                shard_index: shard.shard_index,
-                                shard_offset,
-                                sketch,
-                            }
-                        });
-
-                        if tx.send(load_result).is_err() {
-                            break;
-                        }
+                    if tx.send(load_result).is_err() {
+                        break;
                     }
-                });
+                }
+            });
 
-                let mut shards_done: usize = 0usize;
-                while let Ok(load_result) = rx.recv() {
-                    let mut loaded: LoadedShard = load_result?;
-                    let frequency_threshold: usize = loaded
-                        .sketch
-                        .index
-                        .frequency_threshold(args.freq_threshold_percent);
+            let mut shards_done: usize = 0usize;
+            while let Ok(load_result) = rx.recv() {
+                let mut loaded: LoadedShard = load_result?;
+                let frequency_threshold: usize = loaded
+                    .sketch
+                    .index
+                    .frequency_threshold(args.freq_threshold_percent);
+                let reference_file_offset: usize = reference_file_offsets[loaded.shard_offset];
+                let reference_contig_offset: usize = reference_contig_offsets[loaded.shard_offset];
+                let mut shard_mapping_count: usize = 0usize;
 
+                for (query_slot, preloaded_query) in preloaded_queries.iter().enumerate() {
                     let mut raw_stats: RawQueryMappingStats = collect_query_mappings(
                         &loaded.sketch,
-                        &query_file,
+                        &preloaded_query.query_file,
                         args.kmer_size,
                         args.window_size,
                         args.mash_threshold,
@@ -676,28 +666,15 @@ pub fn run() -> io::Result<()> {
                         frequency_threshold,
                         performance_metrics_enabled,
                     )?;
-                    let shard_mapping_count: usize = raw_stats.mapping_results.len();
-                    let reference_file_offset: usize = reference_file_offsets[loaded.shard_offset];
-                    let reference_contig_offset: usize =
-                        reference_contig_offsets[loaded.shard_offset];
-
+                    let query_shard_mapping_count: usize = raw_stats.mapping_results.len();
                     for mapping in &mut raw_stats.mapping_results {
                         mapping.reference_file_id += reference_file_offset;
                         mapping.reference_contig_id += reference_contig_offset;
                     }
 
-                    query_reference_files.append(&mut loaded.sketch.files);
-                    if let (Some(ref mut master_contigs), Some(mut shard_contigs)) = (
-                        &mut query_reference_contig_names,
-                        loaded.sketch.contig_names,
-                    ) {
-                        master_contigs.append(&mut shard_contigs);
-                    }
-                    query_mapping_results.append(&mut raw_stats.mapping_results);
-
                     mapping_elapsed += raw_stats.mapping_elapsed;
-                    mapping_count += shard_mapping_count;
-
+                    mapping_count += query_shard_mapping_count;
+                    shard_mapping_count += query_shard_mapping_count;
                     #[cfg(debug_assertions)]
                     {
                         if performance_metrics_enabled {
@@ -706,53 +683,174 @@ pub fn run() -> io::Result<()> {
                                 max_mapping_result_bytes.max(raw_stats.max_mapping_result_bytes);
                         }
                     }
-
-                    shards_done += 1;
-                    if progress_enabled {
-                        emit_progress(
-                            "shard_load",
-                            &format!(
-                                "event=complete\tquery_done={query_index}\tshard={}\tshards_done={shards_done}\tshards_total={}\tmappings={}",
-                                loaded.shard_index,
-                                active_shards.len(),
-                                shard_mapping_count
-                            ),
-                            total_start,
-                        );
-                    }
-                    check_memory_limit("after shard query", runtime_options)?;
+                    per_query_mapping_results[query_slot].append(&mut raw_stats.mapping_results);
                 }
-                loader_handle.join().map_err(|_| {
-                    io::Error::new(io::ErrorKind::Other, "shard loader thread panicked")
-                })?;
 
+                all_reference_files.append(&mut loaded.sketch.files);
+                if let (Some(ref mut master_contigs), Some(mut shard_contigs)) =
+                    (&mut all_reference_contig_names, loaded.sketch.contig_names)
+                {
+                    master_contigs.append(&mut shard_contigs);
+                }
+
+                shards_done += 1;
+                if progress_enabled {
+                    emit_progress(
+                        "shard_load",
+                        &format!(
+                            "event=complete\tshard={}\tshards_done={shards_done}\tshards_total={}\tmappings={shard_mapping_count}",
+                            loaded.shard_index,
+                            active_shards.len(),
+                        ),
+                        total_start,
+                    );
+                }
+            }
+            loader_handle.join().map_err(|_| {
+                io::Error::new(io::ErrorKind::Other, "shard loader thread panicked")
+            })?;
+
+            for (query_slot, preloaded_query) in preloaded_queries.iter().enumerate() {
+                let results: Vec<MappingResult> =
+                    std::mem::take(&mut per_query_mapping_results[query_slot]);
                 let stats = write_query_outputs(
-                    &query_reference_files,
-                    query_reference_contig_names.as_deref(),
-                    query_mapping_results,
-                    &query_file,
-                    query_path,
+                    &all_reference_files,
+                    all_reference_contig_names.as_deref(),
+                    results,
+                    &preloaded_query.query_file,
+                    &preloaded_query.query_path,
                     &mut *output,
                     mapping_stats_output.as_deref_mut(),
                     args.fragment_length,
                 )?;
                 summary_elapsed += stats.0;
                 emitted_pairs += stats.1;
+
+                let query_total_time = preloaded_query.query_start.elapsed();
+                if progress_enabled {
+                    emit_progress(
+                        "query",
+                        &format!(
+                            "event=complete\tquery_done={}\tquery_total={}\tfragments={}\tminimizers={}\tseed_minimizers={}\telapsed_ms={}",
+                            preloaded_query.query_index + 1,
+                            args.queries.len(),
+                            preloaded_query.fragment_count,
+                            preloaded_query.minimizer_count,
+                            preloaded_query.seed_minimizer_count,
+                            query_total_time.as_millis()
+                        ),
+                        total_start,
+                    );
+                }
             }
         }
+    }
 
-        let query_total_time = query_start.elapsed();
-        if progress_enabled {
-            emit_progress(
-                "query",
-                &format!(
-                    "event=complete\tquery_done={}\tquery_total={}\tfragments={query_fragment_count}\tminimizers={query_minimizer_count}\tseed_minimizers={query_seed_minimizer_count}\telapsed_ms={}",
-                    query_index + 1,
-                    args.queries.len(),
-                    query_total_time.as_millis()
-                ),
-                total_start,
-            );
+    if let SketchDatabase::Single(reference_sketch) = &reference_database {
+        for (query_index, query) in args.queries.iter().enumerate() {
+            let query_path: &str = query.label.as_str();
+            if progress_enabled {
+                emit_progress(
+                    "query",
+                    &format!(
+                        "event=start\tquery_done={query_index}\tquery_total={}\tpath={query_path}",
+                        args.queries.len()
+                    ),
+                    total_start,
+                );
+            }
+
+            let query_start: Instant = Instant::now();
+            let mut reader_query: fasta::io::Reader<Box<dyn io::BufRead>> =
+                open_fasta_reader(&query.open)?;
+            let query_file: QueryFile = match QueryFile::collect(
+                &mut reader_query,
+                args.kmer_size,
+                args.window_size,
+                args.minmer_count,
+                args.fragment_length,
+                args.fragment_stride,
+                args.min_fragment_length,
+                args.split_n_run,
+            ) {
+                Ok(query_file) => query_file,
+                Err(error) if args.queries.len() > 1 && is_no_usable_fragments_error(&error) => {
+                    query_elapsed += query_start.elapsed();
+                    skipped_queries += 1;
+                    if progress_enabled {
+                        eprintln!("WARNING\tskipping query with no usable fragments\t{query_path}");
+                        emit_progress(
+                            "query",
+                            &format!(
+                                "event=skipped\tquery_done={}\tquery_total={}\tpath={query_path}",
+                                query_index + 1,
+                                args.queries.len()
+                            ),
+                            total_start,
+                        );
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            query_elapsed += query_start.elapsed();
+
+            let query_fragment_count: usize = query_file.fragments.len();
+            let query_minimizer_count: usize = query_file.total_minimizers();
+            let query_seed_minimizer_count: usize = query_file.total_seed_minimizers();
+            total_query_fragments_all += query_fragment_count;
+            total_query_minimizers_all += query_minimizer_count;
+            total_query_seed_minimizers_all += query_seed_minimizer_count;
+
+            #[cfg(debug_assertions)]
+            {
+                if performance_metrics_enabled {
+                    let query_memory: QueryMemoryEstimate = query_file.memory_estimate();
+                    let query_owned_bytes: usize = query_memory.fragment_struct_bytes
+                        + query_memory.query_minimizer_vec_bytes
+                        + query_memory.seed_minimizer_vec_bytes;
+                    _total_query_owned_bytes_all += query_owned_bytes;
+                    max_query_owned_bytes = max_query_owned_bytes.max(query_owned_bytes);
+                }
+            }
+
+            let frequency_threshold: usize = reference_sketch
+                .index
+                .frequency_threshold(args.freq_threshold_percent);
+            let stats: QueryMappingStats = map_query_against_reference_sketch(
+                reference_sketch,
+                &query_file,
+                query_path,
+                &args,
+                frequency_threshold,
+                performance_metrics_enabled,
+                &mut *output,
+                mapping_stats_output.as_deref_mut(),
+            )?;
+            mapping_elapsed += stats.mapping_elapsed;
+            summary_elapsed += stats.summary_elapsed;
+            mapping_count += stats.mapping_count;
+            emitted_pairs += stats.emitted_pairs;
+            #[cfg(debug_assertions)]
+            {
+                mapping_detail_metrics.merge(stats.metrics);
+                max_mapping_result_bytes =
+                    max_mapping_result_bytes.max(stats.max_mapping_result_bytes);
+            }
+
+            let query_total_time = query_start.elapsed();
+            if progress_enabled {
+                emit_progress(
+                    "query",
+                    &format!(
+                        "event=complete\tquery_done={}\tquery_total={}\tfragments={query_fragment_count}\tminimizers={query_minimizer_count}\tseed_minimizers={query_seed_minimizer_count}\telapsed_ms={}",
+                        query_index + 1,
+                        args.queries.len(),
+                        query_total_time.as_millis()
+                    ),
+                    total_start,
+                );
+            }
         }
     }
 
@@ -788,11 +886,8 @@ pub fn run() -> io::Result<()> {
     {
         if performance_metrics_enabled {
             eprintln!(
-                "METRICS\treference_mode={reference_mode}\tthreads={}\tmax_memory_gb={}\tfreq_threshold_percent={:.6}\tfreq_threshold={}\tminmer_count={}\tfragment_stride={}\tmin_fragment_length={}\tsplit_n_run={}\treferences={}\tqueries={}\tskipped_queries={skipped_queries}\treference_contigs={}\tunique_minimizers={}\tquery_fragments={total_query_fragments_all}\tmappings={mapping_count}\temitted_pairs={emitted_pairs}",
+                "METRICS\treference_mode={reference_mode}\tthreads={}\tfreq_threshold_percent={:.6}\tfreq_threshold={}\tminmer_count={}\tfragment_stride={}\tmin_fragment_length={}\tsplit_n_run={}\treferences={}\tqueries={}\tskipped_queries={skipped_queries}\treference_contigs={}\tunique_minimizers={}\tquery_fragments={total_query_fragments_all}\tmappings={mapping_count}\temitted_pairs={emitted_pairs}",
                 args.threads,
-                args.max_memory_bytes
-                    .map(|bytes| format!("{:.3}", memory_gib(bytes)))
-                    .unwrap_or_else(|| "disabled".to_owned()),
                 args.freq_threshold_percent,
                 frequency_threshold_report,
                 args.minmer_count

@@ -17,8 +17,8 @@
     - Several options have been implemented to help scale to variable memory, processor and storage settings:
         - `--sketch`: Create reference database once on a high-performance machine (or download one), queries then use minimal resources
         - `--threads`: Standard multi-threading, applies to reference building and querying
-        - `--max-memory-gb`: Limits reference shard load-size to prevent peak memory from spiking too high
-        - `--index-build-mode <auto|partitioned>` and memory-aware `--max-shard-minimizers` control reference lookup shard size for tunable memory scaling
+        - `--max-shard-minimizers`: Controls reference lookup shard size for tunable memory scaling
+        - `--index-build-mode <auto|partitioned>` controls reference lookup construction strategy
         - `--bgzip`: Reads/writes bgzip-compressed saved reference minimizer lookup tables for low storage scenarios
         - `--tmp <path>`: Optionally redirect temporary files to user defined path
         - Multiple algorithmic parameters (e.g. `--kmer-size`, `--kmer-size`, etc.) can be tuned for sensitivity or speed

@@ -14,16 +14,15 @@ use noodles::fasta;
 use rayon::prelude::*;
 
 use crate::ani::{
-    align_up, canonical_minimizers_with_positions, check_memory_limit, checked_section_end,
-    effective_index_build_mode, emit_progress, mapped_length_from_fragment_ranges, memory_mib,
-    open_fasta_reader, partition_build_plan, slice_as_bytes, slice_as_bytes_mut,
-    split_sequence_ranges, write_contig_name_sidecar, write_padding, CachedReferenceMetadata,
-    ContigRecord, FastaInput, GroupedKeyRecord, IndexBuildMode, MinimizerKey, PartitionBuildPlan,
-    PartitionGroupResult, PartitionHitRecord, PartitionWriters, ReferenceContigName, ReferenceFile,
-    ReferenceHitMap, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
-    SketchBuildStats, SketchOutput, SketchParams, PARTITION_BUFFER_RECORDS,
-    REFERENCE_PROGRESS_INTERVAL, SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC,
-    SKETCH_VERSION,
+    align_up, canonical_minimizers_with_positions, checked_section_end, effective_index_build_mode,
+    emit_progress, mapped_length_from_fragment_ranges, memory_mib, open_fasta_reader,
+    partition_build_plan, slice_as_bytes, slice_as_bytes_mut, split_sequence_ranges,
+    write_contig_name_sidecar, write_padding, CachedReferenceMetadata, ContigRecord, FastaInput,
+    GroupedKeyRecord, IndexBuildMode, MinimizerKey, PartitionBuildPlan, PartitionGroupResult,
+    PartitionHitRecord, PartitionWriters, ReferenceContigName, ReferenceFile, ReferenceHitMap,
+    ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit, SketchBuildStats,
+    SketchOutput, SketchParams, PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL,
+    SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
 };
 
 impl ReferenceSketch {
@@ -104,8 +103,6 @@ impl ReferenceSketch {
                 build_start,
             );
         }
-        check_memory_limit("streaming reference build start", runtime_options)?;
-
         for (file_id, reference) in references.iter().enumerate() {
             let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
                 open_fasta_reader(&reference.open)?;
@@ -227,13 +224,6 @@ impl ReferenceSketch {
                     build_start,
                 );
             }
-            check_memory_limit(
-                &format!(
-                    "streaming reference build after {files_done}/{} files",
-                    references.len()
-                ),
-                runtime_options,
-            )?;
         }
 
         reference_minimizer_writer.flush()?;
@@ -295,8 +285,7 @@ impl ReferenceSketch {
             split_n_run,
         } = params;
         let build_start: Instant = Instant::now();
-        let partition_plan: PartitionBuildPlan =
-            partition_build_plan(estimated_minimizers, runtime_options.max_memory_bytes);
+        let partition_plan: PartitionBuildPlan = partition_build_plan(estimated_minimizers);
         let mut files: Vec<ReferenceFile> = Vec::new();
         let mut contig_records: Vec<ContigRecord> = Vec::new();
         let mut contig_names: Vec<ReferenceContigName> = Vec::new();
@@ -328,8 +317,6 @@ impl ReferenceSketch {
                 build_start,
             );
         }
-        check_memory_limit("partitioned reference build start", runtime_options)?;
-
         for (file_id, reference) in references.iter().enumerate() {
             let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
                 open_fasta_reader(&reference.open)?;
@@ -464,13 +451,6 @@ impl ReferenceSketch {
                     build_start,
                 );
             }
-            check_memory_limit(
-                &format!(
-                    "partitioned reference build after {files_done}/{} files",
-                    references.len()
-                ),
-                runtime_options,
-            )?;
         }
 
         reference_minimizer_writer.flush()?;
@@ -702,8 +682,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("partitioned sketch save start", runtime_options)?;
-
         let partition_paths: Vec<PathBuf> = (0..partition_writers.partition_count())
             .map(|partition_index| partition_writers.path(partition_index).to_path_buf())
             .collect();
@@ -741,11 +719,6 @@ impl ReferenceSketch {
                             save_start,
                         );
                     }
-                    check_memory_limit(
-                        "partitioned sketch save while sorting partitions",
-                        runtime_options,
-                    )?;
-
                     Ok(result)
                 })
                 .collect::<io::Result<Vec<_>>>()
@@ -776,11 +749,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit(
-            "partitioned sketch save after collecting keys",
-            runtime_options,
-        )?;
-
         let key_count: usize = keys.len();
         let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
         drop(keys);
@@ -793,11 +761,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit(
-            "partitioned sketch save after building MPH",
-            runtime_options,
-        )?;
-
         let mut slot_keys: Vec<MinimizerKey> = vec![0; key_count];
         let mut hit_offsets: Vec<u32> = vec![0u32; key_count];
         let mut hit_counts: Vec<u32> = vec![0u32; key_count];
@@ -849,10 +812,6 @@ impl ReferenceSketch {
                         save_start,
                     );
                 }
-                check_memory_limit(
-                    "partitioned sketch save while packing index",
-                    runtime_options,
-                )?;
             }
             partition_hit_offset = partition_hit_offset
                 .checked_add(u64::try_from(result.hit_count).map_err(|err| {
@@ -1013,8 +972,6 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        check_memory_limit("partitioned sketch save complete", runtime_options)?;
-
         Ok(key_count)
     }
 }

@@ -173,6 +173,79 @@ fn reference_is_optional_when_querying_existing_sharded_sketch() {
 }
 
 #[test]
+fn sharded_query_loads_each_reference_shard_once_for_multiple_queries() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("multi-query-shard-loads-once");
+    let sketch_prefix = temp_dir.join("database");
+    let mapping_stats_path = temp_dir.join("mapping-stats.tsv");
+    let sketch_prefix = sketch_prefix.to_str().expect("utf-8 sketch prefix");
+    let mapping_stats_path = mapping_stats_path
+        .to_str()
+        .expect("utf-8 mapping stats path");
+    let reference_one = "assets/test-data/Escherichia_coli_str_K12_MG1655.fna";
+    let reference_two = "assets/test-data/Shigella_flexneri_2a_01.fna";
+
+    let build_output = Command::new(exe)
+        .args([
+            "--reference",
+            reference_one,
+            "--reference",
+            reference_two,
+            "--reference-sketch",
+            sketch_prefix,
+            "--max-shard-minimizers",
+            "1",
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        build_output.status.success(),
+        "build exited with status {:?}: {}",
+        build_output.status,
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let query_output = Command::new(exe)
+        .args([
+            "--query",
+            reference_one,
+            "--query",
+            reference_two,
+            "--reference-sketch",
+            sketch_prefix,
+            "--mapping-stats",
+            mapping_stats_path,
+            "--verbose",
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        query_output.status.success(),
+        "query exited with status {:?}: {}",
+        query_output.status,
+        String::from_utf8_lossy(&query_output.stderr)
+    );
+
+    let stdout = String::from_utf8(query_output.stdout).expect("stdout was not valid UTF-8");
+    assert!(!stdout.is_empty());
+    let stderr = String::from_utf8(query_output.stderr).expect("stderr was not valid UTF-8");
+    assert_eq!(stderr.matches("stage=shard_load\tevent=start").count(), 2);
+    assert_eq!(
+        stderr.matches("stage=shard_load\tevent=complete").count(),
+        2
+    );
+    assert!(!stderr.contains("stage=shard_load\tevent=start\tquery_done="));
+
+    let mapping_stats = fs::read_to_string(mapping_stats_path).expect("read mapping stats");
+    assert!(mapping_stats.starts_with("query_file\treference_file\tquery_contig"));
+    assert!(mapping_stats.lines().count() > 1);
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
 fn quiet_suppresses_startup_summary_from_cli() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
     let output = Command::new(exe)

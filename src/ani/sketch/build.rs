@@ -5,11 +5,10 @@ use std::mem::size_of;
 use std::{io, time::Instant};
 
 use crate::ani::{
-    canonical_minimizers_with_positions, check_memory_limit, emit_progress,
-    mapped_length_from_fragment_ranges, open_fasta_reader, split_sequence_ranges, FastaInput,
-    ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
-    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
-    REFERENCE_PROGRESS_INTERVAL,
+    canonical_minimizers_with_positions, emit_progress, mapped_length_from_fragment_ranges,
+    open_fasta_reader, split_sequence_ranges, FastaInput, ReferenceContig, ReferenceContigName,
+    ReferenceContigs, ReferenceFile, ReferenceHitMap, ReferenceIndex, ReferenceMinimizer,
+    ReferenceSketch, RuntimeOptions, SeedHit, SketchParams, REFERENCE_PROGRESS_INTERVAL,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
@@ -94,8 +93,6 @@ impl ReferenceSketch {
                 build_start,
             );
         }
-        check_memory_limit("reference build start", runtime_options)?;
-
         for (file_id, reference) in references.iter().enumerate() {
             let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
                 open_fasta_reader(&reference.open)?;
@@ -212,13 +209,6 @@ impl ReferenceSketch {
                 );
                 emit_progress("reference_build", &progress_message, build_start);
             }
-            check_memory_limit(
-                &format!(
-                    "reference build after {files_done}/{} files",
-                    references.len()
-                ),
-                runtime_options,
-            )?;
         }
 
         if runtime_options.progress_enabled {

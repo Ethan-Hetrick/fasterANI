@@ -14,9 +14,9 @@ use noodles::fasta;
 use rayon::prelude::*;
 
 use crate::ani::{
-    check_memory_limit, emit_progress, expected_minimizer_window_count, open_fasta_reader,
-    slice_as_bytes, split_sequence_ranges, validate_max_shard_minimizers, FastaInput, MinimizerKey,
-    RuntimeOptions, ScratchFile, SeedHit, ShardManifest, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES,
+    emit_progress, expected_minimizer_window_count, open_fasta_reader, slice_as_bytes,
+    split_sequence_ranges, validate_max_shard_minimizers, FastaInput, MinimizerKey, RuntimeOptions,
+    ScratchFile, SeedHit, ShardManifest, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES,
     ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
     PARTITIONED_INDEX_MINIMIZER_THRESHOLD, REFERENCE_PROGRESS_INTERVAL,
     SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE, SKETCH_VERSION,
@@ -95,31 +95,10 @@ pub(crate) fn estimate_partitioned_shard_memory_bytes(estimated_minimizers: usiz
         .max(DEFAULT_PARTITION_TARGET_BYTES)
 }
 
-pub(crate) fn database_build_parallelism(
-    threads: usize,
-    shard_plans: &[ShardPlan],
-    max_memory_bytes: Option<u64>,
-) -> usize {
+pub(crate) fn database_build_parallelism(threads: usize, shard_plans: &[ShardPlan]) -> usize {
     let requested_threads: usize = threads.max(1);
     let shard_count: usize = shard_plans.len().max(1);
-    let thread_limited_jobs: usize = requested_threads.min(shard_count);
-
-    let Some(max_memory_bytes) = max_memory_bytes else {
-        return thread_limited_jobs;
-    };
-
-    let Ok(max_memory_bytes) = usize::try_from(max_memory_bytes) else {
-        return thread_limited_jobs;
-    };
-
-    let largest_shard_memory_bytes: usize = shard_plans
-        .iter()
-        .map(|plan| estimate_partitioned_shard_memory_bytes(plan.estimated_minimizers))
-        .max()
-        .unwrap_or(DEFAULT_PARTITION_TARGET_BYTES);
-    let memory_limited_jobs: usize = (max_memory_bytes / largest_shard_memory_bytes).max(1);
-
-    thread_limited_jobs.min(memory_limited_jobs)
+    requested_threads.min(shard_count)
 }
 
 fn ceil_div_usize(numerator: usize, denominator: usize) -> usize {
@@ -130,18 +109,11 @@ fn ceil_div_usize(numerator: usize, denominator: usize) -> usize {
     numerator.saturating_add(denominator.saturating_sub(1)) / denominator
 }
 
-pub(crate) fn partition_build_plan(
-    estimated_minimizers: usize,
-    max_memory_bytes: Option<u64>,
-) -> PartitionBuildPlan {
+pub(crate) fn partition_build_plan(estimated_minimizers: usize) -> PartitionBuildPlan {
     let estimated_record_bytes: usize =
         estimated_minimizers.saturating_mul(size_of::<PartitionHitRecord>());
-    let memory_target: usize = max_memory_bytes
-        .and_then(|bytes| usize::try_from(bytes / 8).ok())
-        .unwrap_or(DEFAULT_PARTITION_TARGET_BYTES);
-    let target_partition_bytes: usize = DEFAULT_PARTITION_TARGET_BYTES
-        .min(memory_target)
-        .max(size_of::<PartitionHitRecord>());
+    let target_partition_bytes: usize =
+        DEFAULT_PARTITION_TARGET_BYTES.max(size_of::<PartitionHitRecord>());
     let raw_partition_count: usize =
         ceil_div_usize(estimated_record_bytes.max(1), target_partition_bytes);
     let next_power: usize = raw_partition_count
@@ -334,8 +306,6 @@ pub(crate) fn plan_shards_by_minimizers(
                         plan_start,
                     );
                 }
-                check_memory_limit("during shard planning", runtime_options)?;
-
                 Ok(reference_minimizers)
             })
             .collect::<io::Result<Vec<usize>>>()
@@ -603,8 +573,7 @@ mod tests {
     use crate::ani::{
         database_build_parallelism, partition_build_plan, partition_id_for_key,
         plan_shards_from_minimizer_counts, PartitionBuildPlan, PartitionHitRecord,
-        PartitionWriters, SeedHit, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES, MAX_PARTITION_COUNT,
-        MIN_PARTITION_COUNT,
+        PartitionWriters, SeedHit, ShardPlan, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
     };
     use std::io;
 
@@ -696,19 +665,14 @@ mod tests {
 
     #[test]
     fn automatic_partition_count_uses_power_of_two_bounds() {
-        let small_plan: PartitionBuildPlan = partition_build_plan(10, None);
+        let small_plan: PartitionBuildPlan = partition_build_plan(10);
         assert_eq!(small_plan.partition_count, MIN_PARTITION_COUNT);
         assert!(small_plan.partition_count.is_power_of_two());
 
-        let large_plan: PartitionBuildPlan = partition_build_plan(2_000_000_000, None);
+        let large_plan: PartitionBuildPlan = partition_build_plan(2_000_000_000);
         assert!(large_plan.partition_count > MIN_PARTITION_COUNT);
         assert!(large_plan.partition_count.is_power_of_two());
         assert!(large_plan.partition_count <= MAX_PARTITION_COUNT);
-
-        let constrained_plan: PartitionBuildPlan =
-            partition_build_plan(100_000_000, Some(1024 * 1024 * 1024));
-        assert!(constrained_plan.target_partition_bytes < DEFAULT_PARTITION_TARGET_BYTES);
-        assert!(constrained_plan.partition_count.is_power_of_two());
     }
 
     #[test]
@@ -721,13 +685,8 @@ mod tests {
             };
             16
         ];
-        let one_hundred_gib: u64 = 100 * 1024 * 1024 * 1024;
-
-        assert_eq!(
-            database_build_parallelism(12, &shard_plans, Some(one_hundred_gib)),
-            12
-        );
-        assert_eq!(database_build_parallelism(4, &shard_plans, None), 4);
+        assert_eq!(database_build_parallelism(12, &shard_plans), 12);
+        assert_eq!(database_build_parallelism(4, &shard_plans), 4);
     }
 
     #[test]

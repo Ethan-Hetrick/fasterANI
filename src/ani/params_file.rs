@@ -18,9 +18,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) mash_threshold: Option<f64>,
     pub(crate) mash_confidence: Option<f64>,
     pub(crate) split_n_run: Option<usize>,
-    pub(crate) max_memory_gb: Option<f64>,
     pub(crate) max_shard_minimizers: Option<usize>,
-    pub(crate) max_concurrent_shards: Option<usize>,
     pub(crate) shards: Option<String>,
     pub(crate) index_build_mode: Option<String>,
     pub(crate) bgzip: Option<bool>,
@@ -70,10 +68,6 @@ pub(crate) fn validate_params_file_path(path: &str) -> io::Result<()> {
     }
 
     Ok(())
-}
-
-pub(crate) fn describe_field_parsing_error(field: &str, value: &str, error: &str) -> String {
-    format!("Invalid value for '{field}': got {value:?}: {error}")
 }
 
 #[cfg(test)]

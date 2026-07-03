@@ -13,7 +13,7 @@ use std::{
 use rayon::prelude::*;
 
 use crate::ani::{
-    check_memory_limit, database_build_parallelism, effective_index_build_mode, emit_progress,
+    database_build_parallelism, effective_index_build_mode, emit_progress,
     estimate_partitioned_shard_memory_bytes, legacy_sketch_path, manifest_path, memory_mib,
     plan_shards_by_minimizers, reference_list_checksum, shard_entry_path, shard_filename,
     shard_manifest_compatibility_error, shard_path, unix_timestamp_seconds,
@@ -136,19 +136,14 @@ impl SketchDatabase {
             threads,
             runtime_options,
         )?;
-        let build_parallelism: usize =
-            database_build_parallelism(threads, &shard_plans, runtime_options.max_memory_bytes);
+        let build_parallelism: usize = database_build_parallelism(threads, &shard_plans);
 
         if runtime_options.progress_enabled {
             emit_progress(
                 "database_build",
                 &format!(
-                    "event=shards_planned\tshards={}\tbuild_parallelism={build_parallelism}\tthreads={threads}\tmax_memory_gb={}\tmax_shard_minimizers={max_shard_minimizers}",
-                    shard_plans.len(),
-                    runtime_options
-                        .max_memory_bytes
-                        .map(|bytes| format!("{:.3}", bytes as f64 / (1024.0 * 1024.0 * 1024.0)))
-                        .unwrap_or_else(|| "unset".to_string())
+                    "event=shards_planned\tshards={}\tbuild_parallelism={build_parallelism}\tthreads={threads}\tmax_shard_minimizers={max_shard_minimizers}",
+                    shard_plans.len()
                 ),
                 build_start,
             );
@@ -234,8 +229,6 @@ impl SketchDatabase {
                             build_start,
                         );
                     }
-                    check_memory_limit("after sharded sketch build shard", runtime_options)?;
-
                     Ok(ShardBuildResult {
                         entry: ShardManifestEntry {
                             shard_index,
