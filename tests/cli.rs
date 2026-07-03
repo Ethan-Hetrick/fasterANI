@@ -173,6 +173,73 @@ fn reference_is_optional_when_querying_existing_sharded_sketch() {
 }
 
 #[test]
+fn build_only_existing_reference_sketch_requires_force() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("existing-sketch-build-only-requires-force");
+    let sketch_prefix = temp_dir.join("database");
+    let reference_list = temp_dir.join("references.txt");
+    let reference = fixture_path("Escherichia_coli_str_K12_MG1655.fna");
+    fs::write(&reference_list, format!("{reference}\n")).expect("write reference list");
+
+    let build_output = Command::new(exe)
+        .args([
+            "--reference-list",
+            reference_list.to_str().expect("utf-8 reference list"),
+            "--reference-sketch",
+            sketch_prefix.to_str().expect("utf-8 sketch prefix"),
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        build_output.status.success(),
+        "build exited with status {:?}: {}",
+        build_output.status,
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let blocked_output = Command::new(exe)
+        .args([
+            "--reference-list",
+            reference_list.to_str().expect("utf-8 reference list"),
+            "--reference-sketch",
+            sketch_prefix.to_str().expect("utf-8 sketch prefix"),
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        !blocked_output.status.success(),
+        "build unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&blocked_output.stderr)
+    );
+    let stderr = String::from_utf8(blocked_output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains(
+        "Reference sketch exists and no query was provided. Use `--force` to overwrite. Exiting..."
+    ));
+
+    let forced_output = Command::new(exe)
+        .args([
+            "--reference-list",
+            reference_list.to_str().expect("utf-8 reference list"),
+            "--reference-sketch",
+            sketch_prefix.to_str().expect("utf-8 sketch prefix"),
+            "--force",
+            "--quiet",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        forced_output.status.success(),
+        "forced build exited with status {:?}: {}",
+        forced_output.status,
+        String::from_utf8_lossy(&forced_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
 fn sharded_query_loads_each_reference_shard_once_for_multiple_queries() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
     let temp_dir = temp_test_dir("multi-query-shard-loads-once");

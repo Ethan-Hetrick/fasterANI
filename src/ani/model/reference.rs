@@ -32,6 +32,7 @@ pub(crate) struct ShardedBuildOptions<'a> {
     pub(crate) max_shard_minimizers: usize,
     pub(crate) index_build_mode: IndexBuildMode,
     pub(crate) threads: usize,
+    pub(crate) force_rebuild: bool,
 }
 
 /// One input reference genome file and the number of bases FastANI considers mappable.

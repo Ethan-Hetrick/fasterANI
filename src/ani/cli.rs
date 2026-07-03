@@ -8,12 +8,13 @@ use std::{
 };
 
 use crate::ani::{
-    is_stdin_path, load_params_file, validate_fragment_length, validate_kmer_size,
-    validate_mash_confidence, validate_mash_threshold, validate_max_shard_minimizers,
-    validate_window_size, FastaInput, IndexBuildMode, ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH,
-    DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE,
-    DEFAULT_MASH_CONFIDENCE, DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH,
-    DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    is_stdin_path, legacy_sketch_path, load_params_file, manifest_path, validate_fragment_length,
+    validate_kmer_size, validate_mash_confidence, validate_mash_threshold,
+    validate_max_shard_minimizers, validate_window_size, FastaInput, IndexBuildMode,
+    ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
+    DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE,
+    DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
+    DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
 };
 
 /// Parsed command-line arguments.
@@ -43,6 +44,7 @@ pub(crate) struct CliArgs {
     pub(crate) max_shard_minimizers: usize,
     pub(crate) shard_filter: Option<HashSet<usize>>,
     pub(crate) index_build_mode: IndexBuildMode,
+    pub(crate) force: bool,
 }
 
 fn usage() -> &'static str {
@@ -58,6 +60,7 @@ Inputs:
   --reference-list <path>      File of reference FASTA paths, one per line.
   --reference-sketch <prefix>  Build/reuse an on-disk reference sketch at this prefix.
                                  Query inputs optional (build-only when omitted).
+  --force                      Overwrite an existing reference sketch in build-only mode.
   --query <path>               Query FASTA (repeatable). Use `-` to read one query from
                                  stdin (optionally gzip-compressed).
   --query-list <path>          File of query FASTA paths, one per line.
@@ -758,6 +761,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut emit_header: bool = false;
     let mut verbose: bool = false;
     let mut quiet: bool = false;
+    let mut force: bool = false;
     let mut threads: usize = 1usize;
     let mut freq_threshold_percent: f64 = DEFAULT_FREQ_THRESHOLD_PERCENT;
     let mut minmer_count: Option<usize> = None;
@@ -868,6 +872,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     if let Some(value) = params_file_config.quiet {
         quiet = value;
         sources.quiet = Some(ParameterSource::ParamsFile);
+    }
+    if let Some(value) = params_file_config.force {
+        force = value;
     }
     if let Some(value) = params_file_config.threads {
         threads = value;
@@ -1291,6 +1298,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 quiet = true;
                 sources.quiet = Some(ParameterSource::Cli);
             }
+            "--force" => {
+                force = true;
+            }
             "--help" | "-h" | "--h" | "help" | "-?" => {
                 eprintln!("{}", usage());
                 return Ok(None);
@@ -1322,6 +1332,22 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 "missing --query (omit queries when using --sketch for build-only mode)\n{}",
                 usage()
             ),
+        ));
+    }
+
+    let existing_sketch_requested: bool = sketch_path.as_deref().is_some_and(|prefix| {
+        manifest_path(prefix).exists() || legacy_sketch_path(prefix).is_some()
+    });
+    if queries.is_empty() && existing_sketch_requested && !force {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Reference sketch exists and no query was provided. Use `--force` to overwrite. Exiting...",
+        ));
+    }
+    if queries.is_empty() && existing_sketch_requested && force && references.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Reference sketch exists and no query was provided, but no references were provided for overwrite. Add --reference or --reference-list with --force.",
         ));
     }
 
@@ -1451,6 +1477,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         max_shard_minimizers,
         shard_filter,
         index_build_mode,
+        force,
     };
     if !cli_args.quiet {
         startup_output.emit(&cli_args, &sources);

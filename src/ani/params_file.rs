@@ -25,6 +25,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) header: Option<bool>,
     pub(crate) verbose: Option<bool>,
     pub(crate) quiet: Option<bool>,
+    pub(crate) force: Option<bool>,
     pub(crate) reference_files: Option<Vec<String>>,
     pub(crate) reference_lists: Option<Vec<String>>,
     pub(crate) query_files: Option<Vec<String>>,

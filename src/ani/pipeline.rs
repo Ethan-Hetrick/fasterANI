@@ -399,6 +399,7 @@ pub fn run() -> io::Result<()> {
             max_shard_minimizers: args.max_shard_minimizers,
             index_build_mode: args.index_build_mode,
             threads: args.threads,
+            force_rebuild: args.force && args.queries.is_empty(),
         },
         mapping_stats_requested,
         runtime_options,

@@ -44,6 +44,7 @@ impl SketchDatabase {
         let ShardedBuildOptions {
             tmp_dir,
             max_shard_minimizers,
+            force_rebuild,
             ..
         } = shard_opts;
         let Some(prefix) = sketch_prefix else {
@@ -56,23 +57,25 @@ impl SketchDatabase {
 
         validate_max_shard_minimizers(max_shard_minimizers)?;
 
-        let manifest_path: PathBuf = manifest_path(prefix);
-        if manifest_path.exists() {
-            let manifest: ShardManifest = Self::load_manifest(prefix, params)?;
-            return Ok(Self::Sharded {
-                prefix: prefix.to_path_buf(),
-                manifest,
-            });
-        }
+        if !force_rebuild {
+            let manifest_path: PathBuf = manifest_path(prefix);
+            if manifest_path.exists() {
+                let manifest: ShardManifest = Self::load_manifest(prefix, params)?;
+                return Ok(Self::Sharded {
+                    prefix: prefix.to_path_buf(),
+                    manifest,
+                });
+            }
 
-        if let Some(legacy_path) = legacy_sketch_path(prefix) {
-            return Ok(Self::Single(ReferenceSketch::load(
-                &legacy_path,
-                params,
-                load_contig_names,
-                tmp_dir,
-                runtime_options,
-            )?));
+            if let Some(legacy_path) = legacy_sketch_path(prefix) {
+                return Ok(Self::Single(ReferenceSketch::load(
+                    &legacy_path,
+                    params,
+                    load_contig_names,
+                    tmp_dir,
+                    runtime_options,
+                )?));
+            }
         }
 
         let manifest: ShardManifest =
@@ -104,6 +107,7 @@ impl SketchDatabase {
             max_shard_minimizers,
             index_build_mode,
             threads,
+            ..
         } = shard_opts;
         validate_max_shard_minimizers(max_shard_minimizers)?;
         if let Some(parent) = prefix
