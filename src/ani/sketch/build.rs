@@ -4,6 +4,7 @@
 use std::mem::size_of;
 use std::{
     io,
+    ops::Range,
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
     time::Instant,
 };
@@ -11,8 +12,8 @@ use std::{
 use crate::ani::{
     canonical_minimizers_with_positions, emit_progress, mapped_length_from_fragment_ranges,
     open_fasta_reader, split_sequence_ranges, FastaInput, MinimizerKey, ReferenceContig,
-    ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap, ReferenceIndex,
-    ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
+    ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHashShard, ReferenceHitMap,
+    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
     REFERENCE_PROGRESS_INTERVAL,
 };
 #[cfg(debug_assertions)]
@@ -26,6 +27,23 @@ struct FileBuild {
     contig_names: Vec<ReferenceContigName>,
     keyed_hits: Vec<(MinimizerKey, SeedHit)>,
     minimizer_count: usize,
+}
+
+struct ReferenceIndexBuild {
+    index: ReferenceIndex,
+    target_ranges: usize,
+    actual_ranges: usize,
+    min_range_hits: usize,
+    max_range_hits: usize,
+    index_mode: &'static str,
+    shards: usize,
+}
+
+struct IndexRangeBuild {
+    index: ReferenceHitMap,
+    unique_keys: usize,
+    reserve_ms: f64,
+    group_ms: f64,
 }
 
 fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::Result<FileBuild> {
@@ -146,6 +164,268 @@ fn emit_reference_files_progress(files_done: usize, total_files: usize, build_st
     }
 }
 
+fn unique_key_count(hits: &[(MinimizerKey, SeedHit)]) -> usize {
+    if hits.is_empty() {
+        0
+    } else {
+        1 + hits
+            .windows(2)
+            .filter(|pair| pair[0].0 != pair[1].0)
+            .count()
+    }
+}
+
+fn split_key_aligned_ranges(hits: &[(MinimizerKey, SeedHit)], parts: usize) -> Vec<Range<usize>> {
+    if hits.is_empty() {
+        return Vec::new();
+    }
+
+    let parts: usize = parts.max(1).min(hits.len());
+    let mut ranges: Vec<Range<usize>> = Vec::with_capacity(parts);
+    let mut start: usize = 0usize;
+
+    for part in 1..parts {
+        let mut end: usize = hits.len() * part / parts;
+
+        while end < hits.len() && hits[end - 1].0 == hits[end].0 {
+            end += 1;
+        }
+
+        if end > start {
+            ranges.push(start..end);
+            start = end;
+        }
+    }
+
+    if start < hits.len() {
+        ranges.push(start..hits.len());
+    }
+
+    ranges
+}
+
+fn build_index_range_with_progress(
+    range_id: usize,
+    hits: &[(MinimizerKey, SeedHit)],
+    merge_start: Option<Instant>,
+    worker_threads: usize,
+    index_mode: &'static str,
+) -> IndexRangeBuild {
+    if let Some(start) = merge_start {
+        emit_progress(
+            "reference_merge",
+            &format!(
+                "event=index_range_start\trange_id={range_id}\thits={}\tworker_threads={worker_threads}\tindex_mode={index_mode}",
+                hits.len()
+            ),
+            start,
+        );
+    }
+
+    let reserve_start: Instant = Instant::now();
+    let unique_keys: usize = unique_key_count(hits);
+    let mut index: ReferenceHitMap = ReferenceHitMap::default();
+    index.reserve(unique_keys);
+    let reserve_ms: f64 = reserve_start.elapsed().as_secs_f64() * 1000.0;
+
+    if let Some(start) = merge_start {
+        emit_progress(
+            "reference_merge",
+            &format!(
+                "event=index_range_reserve_complete\trange_id={range_id}\tphase_ms={reserve_ms:.3}\thits={}\tunique_keys={unique_keys}\tworker_threads={worker_threads}\tindex_mode={index_mode}",
+                hits.len()
+            ),
+            start,
+        );
+    }
+
+    let group_start: Instant = Instant::now();
+    let mut cursor: usize = 0usize;
+    while cursor < hits.len() {
+        let key: MinimizerKey = hits[cursor].0;
+        let start: usize = cursor;
+        cursor += 1;
+
+        while cursor < hits.len() && hits[cursor].0 == key {
+            cursor += 1;
+        }
+
+        let mut seed_hits: Vec<SeedHit> = Vec::with_capacity(cursor - start);
+        seed_hits.extend(hits[start..cursor].iter().map(|&(_key, hit)| hit));
+        index.insert(key, seed_hits);
+    }
+    let group_ms: f64 = group_start.elapsed().as_secs_f64() * 1000.0;
+
+    if let Some(start) = merge_start {
+        emit_progress(
+            "reference_merge",
+            &format!(
+                "event=index_range_group_complete\trange_id={range_id}\tphase_ms={group_ms:.3}\thits={}\tunique_keys={unique_keys}\tindex_keys={}\tworker_threads={worker_threads}\tindex_mode={index_mode}",
+                hits.len(),
+                index.len()
+            ),
+            start,
+        );
+    }
+
+    IndexRangeBuild {
+        index,
+        unique_keys,
+        reserve_ms,
+        group_ms,
+    }
+}
+
+fn build_reference_index(
+    all_hits: &[(MinimizerKey, SeedHit)],
+    pool: Option<&rayon::ThreadPool>,
+    worker_threads: usize,
+    merge_start: Option<Instant>,
+) -> ReferenceIndexBuild {
+    let target_ranges: usize = if pool.is_some() {
+        worker_threads * 4
+    } else {
+        usize::from(!all_hits.is_empty())
+    };
+    let range_split_start: Instant = Instant::now();
+    let ranges: Vec<Range<usize>> = if pool.is_some() {
+        split_key_aligned_ranges(all_hits, target_ranges)
+    } else if all_hits.is_empty() {
+        Vec::new()
+    } else {
+        std::iter::once(0..all_hits.len()).collect()
+    };
+    let actual_ranges: usize = ranges.len();
+    let min_range_hits: usize = ranges.iter().map(|range| range.len()).min().unwrap_or(0);
+    let max_range_hits: usize = ranges.iter().map(|range| range.len()).max().unwrap_or(0);
+
+    if let Some(start) = merge_start {
+        emit_progress(
+            "reference_merge",
+            &format!(
+                "event=range_split_complete\tphase_ms={:.3}\thit_records={}\tworker_threads={worker_threads}\ttarget_ranges={target_ranges}\tactual_ranges={actual_ranges}\tmin_range_hits={min_range_hits}\tmax_range_hits={max_range_hits}",
+                range_split_start.elapsed().as_secs_f64() * 1000.0,
+                all_hits.len()
+            ),
+            start,
+        );
+    }
+
+    let index_build_start: Instant = Instant::now();
+    let (index, index_mode, shards, range_unique_keys, range_reserve_ms, range_group_ms): (
+        ReferenceIndex,
+        &'static str,
+        usize,
+        usize,
+        f64,
+        f64,
+    ) = if let Some(pool) = pool {
+        if ranges.len() > 1 {
+            let mut shard_builds: Vec<(ReferenceHashShard, usize, f64, f64)> = pool.install(|| {
+                ranges
+                    .into_par_iter()
+                    .enumerate()
+                    .map(|(range_id, range)| {
+                        let slice: &[(MinimizerKey, SeedHit)] = &all_hits[range];
+                        let first_key: MinimizerKey = slice[0].0;
+                        let last_key: MinimizerKey = slice[slice.len() - 1].0;
+                        let range_build: IndexRangeBuild = build_index_range_with_progress(
+                            range_id,
+                            slice,
+                            merge_start,
+                            worker_threads,
+                            "hash_shards",
+                        );
+                        (
+                            ReferenceHashShard {
+                                first_key,
+                                last_key,
+                                index: range_build.index,
+                            },
+                            range_build.unique_keys,
+                            range_build.reserve_ms,
+                            range_build.group_ms,
+                        )
+                    })
+                    .collect()
+            });
+            let range_unique_keys: usize = shard_builds
+                .iter()
+                .map(|(_shard, unique_keys, _reserve_ms, _group_ms)| *unique_keys)
+                .sum();
+            let range_reserve_ms: f64 = shard_builds
+                .iter()
+                .map(|(_shard, _unique_keys, reserve_ms, _group_ms)| *reserve_ms)
+                .sum();
+            let range_group_ms: f64 = shard_builds
+                .iter()
+                .map(|(_shard, _unique_keys, _reserve_ms, group_ms)| *group_ms)
+                .sum();
+            shard_builds.sort_unstable_by_key(|(shard, _unique_keys, _reserve_ms, _group_ms)| {
+                shard.first_key
+            });
+            let shard_count: usize = shard_builds.len();
+            let shards: Vec<ReferenceHashShard> = shard_builds
+                .into_iter()
+                .map(|(shard, _unique_keys, _reserve_ms, _group_ms)| shard)
+                .collect();
+            (
+                ReferenceIndex::HashShards(shards),
+                "hash_shards",
+                shard_count,
+                range_unique_keys,
+                range_reserve_ms,
+                range_group_ms,
+            )
+        } else {
+            let range_build: IndexRangeBuild =
+                build_index_range_with_progress(0, all_hits, merge_start, worker_threads, "hash");
+            (
+                ReferenceIndex::Hash(range_build.index),
+                "hash",
+                0,
+                range_build.unique_keys,
+                range_build.reserve_ms,
+                range_build.group_ms,
+            )
+        }
+    } else {
+        let range_build: IndexRangeBuild =
+            build_index_range_with_progress(0, all_hits, merge_start, worker_threads, "hash");
+        (
+            ReferenceIndex::Hash(range_build.index),
+            "hash",
+            0,
+            range_build.unique_keys,
+            range_build.reserve_ms,
+            range_build.group_ms,
+        )
+    };
+
+    if let Some(start) = merge_start {
+        emit_progress(
+            "reference_merge",
+            &format!(
+                "event=index_build_complete\tphase_ms={:.3}\thit_records={}\tunique_minimizers={}\trange_unique_keys={range_unique_keys}\trange_reserve_ms={range_reserve_ms:.3}\trange_group_ms={range_group_ms:.3}\tworker_threads={worker_threads}\tindex_mode={index_mode}\tshards={shards}\tactual_ranges={actual_ranges}\tmin_range_hits={min_range_hits}\tmax_range_hits={max_range_hits}",
+                index_build_start.elapsed().as_secs_f64() * 1000.0,
+                all_hits.len(),
+                index.len(),
+            ),
+            start,
+        );
+    }
+
+    ReferenceIndexBuild {
+        index,
+        target_ranges,
+        actual_ranges,
+        min_range_hits,
+        max_range_hits,
+        index_mode,
+        shards,
+    }
+}
+
 impl ReferenceSketch {
     #[cfg(debug_assertions)]
     pub(crate) fn memory_estimate(&self) -> ReferenceMemoryEstimate {
@@ -166,6 +446,36 @@ impl ReferenceSketch {
                     reference_minimizers,
                     reference_minimizer_vec_bytes,
                     unique_index_keys: index.len(),
+                    seed_hits,
+                    seed_hit_vec_bytes,
+                    hash_index_rough_bytes,
+                    ..ReferenceMemoryEstimate::default()
+                }
+            }
+            ReferenceIndex::HashShards(shards) => {
+                let seed_hits: usize = shards
+                    .iter()
+                    .flat_map(|shard| shard.index.values())
+                    .map(Vec::len)
+                    .sum();
+                let seed_hit_vec_bytes: usize = shards
+                    .iter()
+                    .flat_map(|shard| shard.index.values())
+                    .map(|hits| hits.capacity() * size_of::<SeedHit>())
+                    .sum();
+                let unique_index_keys: usize = shards.iter().map(|shard| shard.index.len()).sum();
+                let hash_index_rough_bytes: usize = shards
+                    .iter()
+                    .map(|shard| {
+                        shard.index.capacity()
+                            * (size_of::<MinimizerKey>() + size_of::<Vec<SeedHit>>() + 8)
+                    })
+                    .sum();
+
+                ReferenceMemoryEstimate {
+                    reference_minimizers,
+                    reference_minimizer_vec_bytes,
+                    unique_index_keys,
                     seed_hits,
                     seed_hit_vec_bytes,
                     hash_index_rough_bytes,
@@ -259,6 +569,7 @@ impl ReferenceSketch {
             emit_progress("reference_merge", "event=start", start);
         }
 
+        let flatten_start: Instant = Instant::now();
         let total_contigs: usize = per_file.iter().map(|build| build.contigs.len()).sum();
         let total_reference_minimizers: usize =
             per_file.iter().map(|build| build.minimizer_count).sum();
@@ -301,6 +612,21 @@ impl ReferenceSketch {
             all_hits.extend(built.keyed_hits);
         }
 
+        if let Some(start) = merge_start {
+            emit_progress(
+                "reference_merge",
+                &format!(
+                    "event=flatten_complete\tphase_ms={:.3}\thit_records={}\tcontigs={}\tfiles={}\tworker_threads={worker_threads}",
+                    flatten_start.elapsed().as_secs_f64() * 1000.0,
+                    all_hits.len(),
+                    contigs.len(),
+                    files.len()
+                ),
+                start,
+            );
+        }
+
+        let sort_start: Instant = Instant::now();
         if let Some(pool) = pool.as_ref() {
             pool.install(|| {
                 all_hits.par_sort_unstable_by_key(|&(key, hit)| {
@@ -311,31 +637,31 @@ impl ReferenceSketch {
             all_hits
                 .sort_unstable_by_key(|&(key, hit)| (key, hit.reference_contig_id, hit.position));
         }
+        let sorted_unique_minimizers: Option<usize> =
+            merge_start.map(|_| unique_key_count(&all_hits));
 
-        let unique_minimizer_count: usize = if all_hits.is_empty() {
-            0
-        } else {
-            1 + all_hits
-                .windows(2)
-                .filter(|pair| pair[0].0 != pair[1].0)
-                .count()
-        };
-        let mut index: ReferenceHitMap = ReferenceHitMap::default();
-        index.reserve(unique_minimizer_count);
-        let mut cursor: usize = 0usize;
-        while cursor < all_hits.len() {
-            let key: MinimizerKey = all_hits[cursor].0;
-            let start: usize = cursor;
-            cursor += 1;
-
-            while cursor < all_hits.len() && all_hits[cursor].0 == key {
-                cursor += 1;
-            }
-
-            let mut hits: Vec<SeedHit> = Vec::with_capacity(cursor - start);
-            hits.extend(all_hits[start..cursor].iter().map(|&(_key, hit)| hit));
-            index.insert(key, hits);
+        if let Some(start) = merge_start {
+            emit_progress(
+                "reference_merge",
+                &format!(
+                    "event=sort_complete\tphase_ms={:.3}\thit_records={}\tunique_minimizers={}\tworker_threads={worker_threads}",
+                    sort_start.elapsed().as_secs_f64() * 1000.0,
+                    all_hits.len(),
+                    sorted_unique_minimizers.unwrap_or(0)
+                ),
+                start,
+            );
         }
+
+        let ReferenceIndexBuild {
+            index,
+            target_ranges,
+            actual_ranges,
+            min_range_hits,
+            max_range_hits,
+            index_mode,
+            shards,
+        } = build_reference_index(&all_hits, pool.as_ref(), worker_threads, merge_start);
 
         if let Some(start) = merge_start {
             #[cfg(debug_assertions)]
@@ -346,14 +672,18 @@ impl ReferenceSketch {
                     index.len(),
                 );
                 format!(
-                    "event=complete\tunique_minimizers={}\tseed_hits={total_seed_hits}\testimated_struct_mib={:.3}",
+                    "event=complete\thit_records={}\tcontigs={}\tunique_minimizers={}\tseed_hits={total_seed_hits}\tworker_threads={worker_threads}\ttarget_ranges={target_ranges}\tactual_ranges={actual_ranges}\tmin_range_hits={min_range_hits}\tmax_range_hits={max_range_hits}\tindex_mode={index_mode}\tshards={shards}\testimated_struct_mib={:.3}",
+                    all_hits.len(),
+                    contigs.len(),
                     index.len(),
                     memory_mib(estimated_struct_bytes)
                 )
             };
             #[cfg(not(debug_assertions))]
             let progress_message: String = format!(
-                "event=complete\tunique_minimizers={}\tseed_hits={total_seed_hits}",
+                "event=complete\thit_records={}\tcontigs={}\tunique_minimizers={}\tseed_hits={total_seed_hits}\tworker_threads={worker_threads}\ttarget_ranges={target_ranges}\tactual_ranges={actual_ranges}\tmin_range_hits={min_range_hits}\tmax_range_hits={max_range_hits}\tindex_mode={index_mode}\tshards={shards}",
+                all_hits.len(),
+                contigs.len(),
                 index.len()
             );
             emit_progress("reference_merge", &progress_message, start);
@@ -375,7 +705,7 @@ impl ReferenceSketch {
             files,
             contigs: ReferenceContigs::Owned(contigs),
             contig_names: Some(contig_names),
-            index: ReferenceIndex::Hash(index),
+            index,
         })
     }
 }

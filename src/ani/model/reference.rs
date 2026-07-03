@@ -100,7 +100,15 @@ pub(crate) enum ReferenceContigs {
 /// Lookup table from minimizer hash to all reference positions containing that minimizer.
 pub(crate) enum ReferenceIndex {
     Hash(ReferenceHitMap),
+    HashShards(Vec<ReferenceHashShard>),
     Mphf(MmapReferenceIndex),
+}
+
+/// One key-range shard of an in-memory reference hit map.
+pub(crate) struct ReferenceHashShard {
+    pub(crate) first_key: MinimizerKey,
+    pub(crate) last_key: MinimizerKey,
+    pub(crate) index: ReferenceHitMap,
 }
 
 /// JSON metadata stored at the front of a `.fasketch` cache.
@@ -212,6 +220,15 @@ impl ReferenceIndex {
     pub(crate) fn get(&self, minimizer: &MinimizerKey) -> Option<&[SeedHit]> {
         match self {
             Self::Hash(index) => index.get(minimizer).map(Vec::as_slice),
+            Self::HashShards(shards) => {
+                let shard_index: usize =
+                    shards.partition_point(|shard| shard.last_key < *minimizer);
+                let shard: &ReferenceHashShard = shards.get(shard_index)?;
+                if *minimizer < shard.first_key {
+                    return None;
+                }
+                shard.index.get(minimizer).map(Vec::as_slice)
+            }
             Self::Mphf(index) => index.get(minimizer),
         }
     }
@@ -235,7 +252,7 @@ impl ReferenceIndex {
                 }
                 out.sort_unstable_by_key(|&(slot, _)| slot);
             }
-            Self::Hash(_) => {
+            Self::Hash(_) | Self::HashShards(_) => {
                 // In-memory hash map has no meaningful slot ordering;
                 // leave out empty and fall back to direct lookup in the caller.
             }
@@ -249,20 +266,21 @@ impl ReferenceIndex {
     ) -> Option<(u32, u32)> {
         match self {
             Self::Mphf(index) => index.hit_range_by_slot(slot, minimizer),
-            Self::Hash(_) => None,
+            Self::Hash(_) | Self::HashShards(_) => None,
         }
     }
 
     pub(crate) fn hit_payload_range(&self, offset: u32, count: u32) -> Option<&[SeedHit]> {
         match self {
             Self::Mphf(index) => index.hit_payload_range(offset, count),
-            Self::Hash(_) => None,
+            Self::Hash(_) | Self::HashShards(_) => None,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         match self {
             Self::Hash(index) => index.len(),
+            Self::HashShards(shards) => shards.iter().map(|shard| shard.index.len()).sum(),
             Self::Mphf(index) => index.key_count,
         }
     }
@@ -280,6 +298,14 @@ impl ReferenceIndex {
                 for hits in index.values() {
                     *histogram.entry(hits.len()).or_default() += 1;
                     total_unique_minimizers += 1;
+                }
+            }
+            Self::HashShards(shards) => {
+                for shard in shards {
+                    for hits in shard.index.values() {
+                        *histogram.entry(hits.len()).or_default() += 1;
+                        total_unique_minimizers += 1;
+                    }
                 }
             }
             Self::Mphf(index) => {
