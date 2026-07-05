@@ -1,8 +1,8 @@
 //! Seed-hit candidate discovery and sliding-window ANI scoring per query/reference pair.
 
-use std::{cmp::Ordering, collections::HashSet, io};
 #[cfg(debug_assertions)]
-use std::{mem::size_of, time::Instant};
+use std::mem::size_of;
+use std::{cmp::Ordering, collections::HashSet, io, time::Instant};
 
 use noodles::fasta;
 use rayon::prelude::*;
@@ -273,12 +273,10 @@ fn record_candidate_discovery_metrics(
     mapping_metrics: &mut MappingMetrics,
     seed_hit_count: usize,
     candidate_region_count: usize,
-    elapsed: std::time::Duration,
 ) {
     mapping_metrics.candidate_discovery_calls += 1;
     mapping_metrics.seed_hits_collected += seed_hit_count;
     let _ = candidate_region_count;
-    mapping_metrics.candidate_discovery_elapsed += elapsed;
 }
 
 /// Map one query fragment, appending all reportAll-style surviving mappings.
@@ -311,8 +309,7 @@ fn map_query_fragment_into(
         min_identity,
         mash_confidence,
     );
-    #[cfg(debug_assertions)]
-    let candidate_discovery_start: Option<Instant> = collect_metrics.then(Instant::now);
+    let candidate_discovery_start: Instant = Instant::now();
     reference_sketch.find_candidate_regions(
         &query_fragment.seed_minimizers,
         query_fragment.length,
@@ -325,13 +322,13 @@ fn map_query_fragment_into(
         #[cfg(debug_assertions)]
         collect_metrics.then_some(&mut *mapping_metrics),
     );
+    mapping_metrics.candidate_discovery_elapsed += candidate_discovery_start.elapsed();
     #[cfg(debug_assertions)]
-    if let Some(start) = candidate_discovery_start {
+    if collect_metrics {
         record_candidate_discovery_metrics(
             mapping_metrics,
             scratch.seed_hits.len(),
             scratch.candidate_regions.len(),
-            start.elapsed(),
         );
     }
     let candidate_region_count: usize = scratch.candidate_regions.len();

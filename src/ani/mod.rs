@@ -40,4 +40,4 @@ pub(crate) use sketch::*;
 pub(crate) use test_support::*;
 pub(crate) use validation::*;
 
-pub use pipeline::run;
+pub use pipeline::{run, run_started_at};

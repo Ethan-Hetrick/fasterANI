@@ -24,7 +24,6 @@ pub(crate) struct MappingMetrics {
     pub(crate) scoring_window_steps: usize,
     #[cfg(debug_assertions)]
     pub(crate) retained_mappings: usize,
-    #[cfg(debug_assertions)]
     pub(crate) candidate_discovery_elapsed: std::time::Duration,
     #[cfg(debug_assertions)]
     pub(crate) scoring_elapsed: std::time::Duration,
@@ -46,6 +45,7 @@ impl MappingMetrics {
     pub(crate) fn merge(&mut self, other: Self) {
         self.candidate_regions_found += other.candidate_regions_found;
         self.candidate_regions_scored += other.candidate_regions_scored;
+        self.candidate_discovery_elapsed += other.candidate_discovery_elapsed;
         #[cfg(debug_assertions)]
         {
             self.candidate_discovery_calls += other.candidate_discovery_calls;
@@ -53,7 +53,6 @@ impl MappingMetrics {
             self.reference_minimizers_scanned += other.reference_minimizers_scanned;
             self.scoring_window_steps += other.scoring_window_steps;
             self.retained_mappings += other.retained_mappings;
-            self.candidate_discovery_elapsed += other.candidate_discovery_elapsed;
             self.scoring_elapsed += other.scoring_elapsed;
             self.seed_lookup_count += other.seed_lookup_count;
             self.seed_lookup_zero_hits += other.seed_lookup_zero_hits;

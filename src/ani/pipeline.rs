@@ -16,7 +16,7 @@ use noodles::fasta;
 use crate::ani::{
     emit_progress, fastani_compatible_fragment_mode, final_ani_computation,
     is_no_usable_fragments_error, legacy_sketch_path, manifest_path,
-    map_query_to_reference_parallel, open_fasta_reader, parse_cli_args,
+    map_query_to_reference_parallel, open_fasta_reader, parse_cli_args, peak_rss_kb,
     performance_metrics_enabled, shard_entry_path, AniComputation, CliArgs, MappingMetrics,
     MappingOutput, MappingResult, MappingResultKey, QueryFile, QueryFragment, ReferenceContigName,
     ReferenceFile, ReferenceSketch, RuntimeOptions, ShardedBuildOptions, SketchDatabase,
@@ -24,15 +24,75 @@ use crate::ani::{
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
-    memory_mib, peak_rss_kb, QueryMemoryEstimate, ReferenceMemoryEstimate,
-    SEED_HIT_HISTOGRAM_OVERFLOW_LABEL, SEED_HIT_HISTOGRAM_UPPER_BOUNDS,
+    memory_mib, QueryMemoryEstimate, ReferenceMemoryEstimate, SEED_HIT_HISTOGRAM_OVERFLOW_LABEL,
+    SEED_HIT_HISTOGRAM_UPPER_BOUNDS,
 };
+
+#[derive(Clone, Copy)]
+struct PairSummaryStats {
+    pub(crate) emitted_pairs: usize,
+    pub(crate) ani_min: f64,
+    pub(crate) ani_max: f64,
+    pub(crate) af_min: f64,
+    pub(crate) af_max: f64,
+}
+
+impl Default for PairSummaryStats {
+    fn default() -> Self {
+        Self {
+            emitted_pairs: 0,
+            ani_min: f64::NAN,
+            ani_max: f64::NAN,
+            af_min: f64::NAN,
+            af_max: f64::NAN,
+        }
+    }
+}
+
+impl PairSummaryStats {
+    fn record_pair(&mut self, ani: f64, aligned_fraction: f64) {
+        if self.emitted_pairs == 0 {
+            self.ani_min = ani;
+            self.ani_max = ani;
+            self.af_min = aligned_fraction;
+            self.af_max = aligned_fraction;
+        } else {
+            self.ani_min = self.ani_min.min(ani);
+            self.ani_max = self.ani_max.max(ani);
+            self.af_min = self.af_min.min(aligned_fraction);
+            self.af_max = self.af_max.max(aligned_fraction);
+        }
+        self.emitted_pairs += 1;
+    }
+
+    fn merge(&mut self, other: Self) {
+        if other.emitted_pairs == 0 {
+            return;
+        }
+        if self.emitted_pairs == 0 {
+            *self = other;
+            return;
+        }
+
+        self.emitted_pairs += other.emitted_pairs;
+        self.ani_min = self.ani_min.min(other.ani_min);
+        self.ani_max = self.ani_max.max(other.ani_max);
+        self.af_min = self.af_min.min(other.af_min);
+        self.af_max = self.af_max.max(other.af_max);
+    }
+}
+
+struct QueryOutputStats {
+    pub(crate) summary_elapsed: std::time::Duration,
+    pub(crate) pair_stats: PairSummaryStats,
+}
 
 struct QueryMappingStats {
     pub(crate) mapping_elapsed: std::time::Duration,
     pub(crate) summary_elapsed: std::time::Duration,
     pub(crate) mapping_count: usize,
     pub(crate) emitted_pairs: usize,
+    pub(crate) pair_stats: PairSummaryStats,
     pub(crate) metrics: MappingMetrics,
     #[cfg(debug_assertions)]
     pub(crate) max_mapping_result_bytes: usize,
@@ -227,7 +287,7 @@ fn write_query_outputs(
     output: &mut dyn Write,
     mapping_stats_output: Option<&mut (dyn Write + '_)>,
     fragment_length: u32,
-) -> io::Result<(std::time::Duration, usize)> {
+) -> io::Result<QueryOutputStats> {
     if let Some(stats_output) = mapping_stats_output {
         let reciprocal_keys = final_ani_computation(
             mapping_results.clone(),
@@ -252,7 +312,7 @@ fn write_query_outputs(
     let summary_elapsed: std::time::Duration = summary_start.elapsed();
 
     let query_mapped_length: u64 = query_file.mapped_length();
-    let mut emitted_pairs: usize = 0usize;
+    let mut pair_stats: PairSummaryStats = PairSummaryStats::default();
 
     for (reference_file, summary) in reference_files.iter().zip(ani_computation.summaries) {
         if summary.shared_fragments == 0 {
@@ -277,10 +337,13 @@ fn write_query_outputs(
             stats.p80,
             significance_stars(stats.p80),
         )?;
-        emitted_pairs += 1;
+        pair_stats.record_pair(ani, aligned_fraction);
     }
 
-    Ok((summary_elapsed, emitted_pairs))
+    Ok(QueryOutputStats {
+        summary_elapsed,
+        pair_stats,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -306,7 +369,7 @@ fn map_query_against_reference_sketch(
         performance_metrics_enabled,
     )?;
     let mapping_count: usize = raw_stats.mapping_results.len();
-    let (summary_elapsed, emitted_pairs) = write_query_outputs(
+    let output_stats: QueryOutputStats = write_query_outputs(
         &reference_sketch.files,
         reference_sketch.contig_names.as_deref(),
         raw_stats.mapping_results,
@@ -319,9 +382,10 @@ fn map_query_against_reference_sketch(
 
     Ok(QueryMappingStats {
         mapping_elapsed: raw_stats.mapping_elapsed,
-        summary_elapsed,
+        summary_elapsed: output_stats.summary_elapsed,
         mapping_count,
-        emitted_pairs,
+        emitted_pairs: output_stats.pair_stats.emitted_pairs,
+        pair_stats: output_stats.pair_stats,
         metrics: raw_stats.metrics,
         #[cfg(debug_assertions)]
         max_mapping_result_bytes: raw_stats.max_mapping_result_bytes,
@@ -330,7 +394,11 @@ fn map_query_against_reference_sketch(
 
 /// Run the fasterANI command-line application.
 pub fn run() -> io::Result<()> {
-    let total_start: Instant = Instant::now();
+    run_started_at(Instant::now())
+}
+
+/// Run the fasterANI command-line application using a caller-provided process start time.
+pub fn run_started_at(total_start: Instant) -> io::Result<()> {
     let Some(args) = parse_cli_args()? else {
         return Ok(());
     };
@@ -346,7 +414,7 @@ pub fn run() -> io::Result<()> {
         args.min_fragment_length,
     ) {
         eprintln!(
-            "WARNING\tadaptive fragment mode enabled\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}",
+            "WARNING\tevent=adaptive_fragment_mode\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}",
             args.fragment_length, args.fragment_stride, args.min_fragment_length
         );
     }
@@ -434,6 +502,7 @@ pub fn run() -> io::Result<()> {
     let mut mapping_count: usize = 0usize;
     let mut mapping_detail_metrics: MappingMetrics = MappingMetrics::default();
     let mut emitted_pairs: usize = 0usize;
+    let mut pair_summary_stats: PairSummaryStats = PairSummaryStats::default();
     let mut skipped_queries: usize = 0usize;
     let mut output: Box<dyn Write> = match &args.out_path {
         Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
@@ -538,7 +607,9 @@ pub fn run() -> io::Result<()> {
                     query_elapsed += query_start.elapsed();
                     skipped_queries += 1;
                     if progress_enabled {
-                        eprintln!("WARNING\tskipping query with no usable fragments\t{query_path}");
+                        eprintln!(
+                            "WARNING\tevent=query_skipped\treason=no_usable_fragments\tpath={query_path}"
+                        );
                         emit_progress(
                             "query",
                             &format!(
@@ -713,7 +784,7 @@ pub fn run() -> io::Result<()> {
             for (query_slot, preloaded_query) in preloaded_queries.iter().enumerate() {
                 let results: Vec<MappingResult> =
                     std::mem::take(&mut per_query_mapping_results[query_slot]);
-                let stats = write_query_outputs(
+                let stats: QueryOutputStats = write_query_outputs(
                     &all_reference_files,
                     all_reference_contig_names.as_deref(),
                     results,
@@ -723,8 +794,9 @@ pub fn run() -> io::Result<()> {
                     mapping_stats_output.as_deref_mut(),
                     args.fragment_length,
                 )?;
-                summary_elapsed += stats.0;
-                emitted_pairs += stats.1;
+                summary_elapsed += stats.summary_elapsed;
+                emitted_pairs += stats.pair_stats.emitted_pairs;
+                pair_summary_stats.merge(stats.pair_stats);
                 let query_candidate_count: usize =
                     per_query_mapping_metrics[query_slot].candidate_regions_scored;
 
@@ -780,7 +852,9 @@ pub fn run() -> io::Result<()> {
                     query_elapsed += query_start.elapsed();
                     skipped_queries += 1;
                     if progress_enabled {
-                        eprintln!("WARNING\tskipping query with no usable fragments\t{query_path}");
+                        eprintln!(
+                            "WARNING\tevent=query_skipped\treason=no_usable_fragments\tpath={query_path}"
+                        );
                         emit_progress(
                             "query",
                             &format!(
@@ -833,6 +907,7 @@ pub fn run() -> io::Result<()> {
             summary_elapsed += stats.summary_elapsed;
             mapping_count += stats.mapping_count;
             emitted_pairs += stats.emitted_pairs;
+            pair_summary_stats.merge(stats.pair_stats);
             let query_candidate_count: usize = stats.metrics.candidate_regions_scored;
             mapping_detail_metrics.merge(stats.metrics);
             #[cfg(debug_assertions)]
@@ -860,6 +935,32 @@ pub fn run() -> io::Result<()> {
     output.flush()?;
     if let Some(mut stats_out) = mapping_stats_output {
         stats_out.flush()?;
+    }
+
+    if !args.quiet {
+        let peak_rss_kb_value: i64 = peak_rss_kb();
+        let peak_rss_gib: f64 = if peak_rss_kb_value > 0 {
+            peak_rss_kb_value as f64 / 1024.0 / 1024.0
+        } else {
+            f64::NAN
+        };
+        eprintln!(
+            "SUMMARY\tstage=execution\tevent=complete\tqueries={}\treferences={}\ttotal_runtime_s={:.3}\tpeak_rss_gib={peak_rss_gib:.3}\temitted_pairs={emitted_pairs}\tcandidate_regions={}\tani_min={:.3}\tani_max={:.3}\taf_min={:.3}\taf_max={:.3}\treference_build_s={:.3}\tmapping_s={:.3}\tquery_collect_s={:.3}\tcandidate_discovery_s={:.3}",
+            args.queries.len(),
+            reference_database.reference_count(),
+            total_start.elapsed().as_secs_f64(),
+            mapping_detail_metrics.candidate_regions_scored,
+            pair_summary_stats.ani_min,
+            pair_summary_stats.ani_max,
+            pair_summary_stats.af_min,
+            pair_summary_stats.af_max,
+            reference_elapsed.as_secs_f64(),
+            mapping_elapsed.as_secs_f64(),
+            query_elapsed.as_secs_f64(),
+            mapping_detail_metrics
+                .candidate_discovery_elapsed
+                .as_secs_f64(),
+        );
     }
 
     if progress_enabled {

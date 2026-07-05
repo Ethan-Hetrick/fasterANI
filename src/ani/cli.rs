@@ -72,7 +72,8 @@ Output:
                                  default: off.
   --mapping-stats <path>       Write a per-fragment mapping-stats TSV (always headered).
   --verbose                    Print PROGRESS/diagnostics to stderr (default: off).
-  --quiet                      Suppress startup parameter summary (default: off).
+  --quiet, --silent            Suppress startup parameter summary and final SUMMARY
+                                 log (default: off).
 
   Results columns (tab-separated):
     query_file           Query genome file path.
@@ -602,10 +603,14 @@ fn add_reference_list(
     match fs::exists(&absolute_path) {
         Ok(true) => {}
         Ok(false) => eprintln!(
-            "ERROR: Reference list {} does not exist.",
+            "ERROR\tevent=reference_list_missing\tpath={}",
             absolute_path.display()
         ),
-        Err(e) => eprintln!("ERROR: Error loading reference list: {}", e),
+        Err(e) => eprintln!(
+            "ERROR\tevent=reference_list_load_failed\tpath={}\terror={}",
+            absolute_path.display(),
+            e
+        ),
     }
 
     startup_output.reference_lists.push(StartupValue::new(
@@ -677,10 +682,14 @@ fn add_query_list(
     match fs::exists(&absolute_path) {
         Ok(true) => {}
         Ok(false) => eprintln!(
-            "ERROR: Query list {} does not exist.",
+            "ERROR\tevent=query_list_missing\tpath={}",
             absolute_path.display()
         ),
-        Err(e) => eprintln!("ERROR: Error loading query list: {}", e),
+        Err(e) => eprintln!(
+            "ERROR\tevent=query_list_load_failed\tpath={}\terror={}",
+            absolute_path.display(),
+            e
+        ),
     }
 
     startup_output.query_lists.push(StartupValue::new(
@@ -1295,7 +1304,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 verbose = true;
                 sources.verbose = Some(ParameterSource::Cli);
             }
-            "--quiet" => {
+            "--quiet" | "--silent" => {
                 quiet = true;
                 sources.quiet = Some(ParameterSource::Cli);
             }

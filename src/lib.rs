@@ -7,4 +7,4 @@
 
 pub mod ani;
 
-pub use ani::run;
+pub use ani::{run, run_started_at};
