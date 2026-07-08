@@ -122,13 +122,15 @@ Fragmenting (how each query contig is cut into fragments):
                                bases; 0 disables splitting (alias: --split-n; default 0).
 
 Fragment mapping (thresholds applied to each individual fragment alignment):
-  --mash-threshold <0..100>    Minimum Mash identity for a query fragment to count towards
-                                 the final ANI (default 80).
+  --mash-threshold <0..100>    Drop query fragments whose estimated Mash identity is below
+                                 this percent before calculating ANI (default 80).
+                                 Use 0 to disable this fragment identity filter.
   --mash-confidence <0..=1>    Confidence interval width for the Mash upper-identity bound
                                  used in fragment filtering (default 0.9).
                                  Higher values are more permissive; 0.9 uses one-sided
-                                 tail alpha 0.05. Use 0 to disable this relaxation;
-                                 1 is accepted but usually not advised.
+                                 tail alpha 0.05. Use 0 to require the estimated identity
+                                 itself to pass --mash-threshold; 1 is accepted but
+                                 usually not advised.
 
   Per genome pair, fasterANI keeps only reciprocal-best fragment mappings and reports
     ANI as the length-weighted mean of those retained fragments' identities.

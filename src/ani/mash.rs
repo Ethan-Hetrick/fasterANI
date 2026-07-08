@@ -230,6 +230,10 @@ pub(crate) fn estimate_relaxed_minimum_shared_minimizers(
     percent_identity: f64,
     mash_confidence: f64,
 ) -> usize {
+    if percent_identity <= 0.0 {
+        return 1;
+    }
+
     let strict_minimum: usize =
         estimate_minimum_shared_minimizers(sketch_size, kmer_size, percent_identity);
     let mut relaxed_minimum: usize = strict_minimum;

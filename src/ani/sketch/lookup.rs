@@ -230,13 +230,16 @@ impl ReferenceSketch {
         let sketch_size: usize = query_fragment.minimizers.len();
         let jaccard: f64 = best_shared as f64 / sketch_size as f64;
         let distance: f64 = fastani_mash_distance(jaccard, kmer_size);
-        let lower_distance: f64 =
-            mash_distance_lower_bound(distance, sketch_size, kmer_size, mash_confidence);
         let identity: f64 = 100.0 * (1.0 - distance);
-        let upper_identity: f64 = 100.0 * (1.0 - lower_distance);
 
-        if upper_identity < min_identity {
-            return None;
+        if min_identity > 0.0 {
+            let lower_distance: f64 =
+                mash_distance_lower_bound(distance, sketch_size, kmer_size, mash_confidence);
+            let upper_identity: f64 = 100.0 * (1.0 - lower_distance);
+
+            if upper_identity < min_identity {
+                return None;
+            }
         }
 
         Some(MappingResult {
