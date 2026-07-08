@@ -80,12 +80,19 @@ impl MappingResultKey {
 }
 
 /// Accumulator for final ANI output for one reference file.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct AniSummary {
     pub(crate) shared_fragments: usize,
     pub(crate) shared_bases: u64,
     pub(crate) weighted_identity_sum: f64,
     pub(crate) distribution_stats: AniDistributionStats,
+}
+
+/// Final ANI output for one query contig against one reference file.
+#[derive(Clone, Default)]
+pub(crate) struct ContigAniSummary {
+    pub(crate) eligible_fragments: usize,
+    pub(crate) summary: AniSummary,
 }
 
 /// Distribution statistics for retained fragment ANI values.
@@ -123,6 +130,7 @@ impl Default for AniDistributionStats {
 /// Final per-reference summaries plus the exact mappings that contributed to them.
 pub(crate) struct AniComputation {
     pub(crate) summaries: Vec<AniSummary>,
+    pub(crate) contig_summaries: Vec<Vec<ContigAniSummary>>,
     pub(crate) reciprocal_best_keys: HashSet<MappingResultKey>,
 }
 

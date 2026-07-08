@@ -25,6 +25,7 @@ pub(crate) struct CliArgs {
     pub(crate) tmp_dir: Option<PathBuf>,
     pub(crate) out_path: Option<PathBuf>,
     pub(crate) mapping_stats_path: Option<PathBuf>,
+    pub(crate) per_contig: bool,
     pub(crate) bgzip: bool,
     pub(crate) emit_header: bool,
     pub(crate) verbose: bool,
@@ -72,6 +73,9 @@ Output:
   --out <path>                 Write results TSV here (default: stdout).
   --header                     Prepend a column-name header row to the results TSV
                                  default: off.
+  --per-contig                 Report one row per query contig and reference file.
+                                 Aggregate genome-pair summaries are written first
+                                 as commented lines.
   --mapping-stats <path>       Write a per-fragment mapping-stats TSV (always headered).
   --verbose                    Print PROGRESS/diagnostics to stderr (default: off).
   --quiet, --silent            Suppress startup parameter summary and final SUMMARY
@@ -91,6 +95,11 @@ Output:
     F80                  Fraction of retained fragments with ANI <= 80%.
 
   Note: Fragment counts may be fractional.
+        With --per-contig, contigs that have no usable fragments are reported
+        with NaN ANI fields.
+        --per-contig output columns are: query_file, reference_file,
+        query_contig, eligible_fragments, shared_fragments, shared_bases,
+        ANI, median_ANI, stddev, ci_95_upper, ci_95_lower, F99, F80.
 
 Seeding (minimizer sketch; applies to both references and queries):
   --kmer-size <n>              K-mer size for minimizers (default 16).
@@ -769,6 +778,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut tmp_dir: Option<PathBuf> = None;
     let mut out_path: Option<PathBuf> = None;
     let mut mapping_stats_path: Option<PathBuf> = None;
+    let mut per_contig: bool = false;
     let mut bgzip: bool = false;
     let mut emit_header: bool = false;
     let mut verbose: bool = false;
@@ -1038,6 +1048,9 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 )?;
             }
             "--skip-validation" => {}
+            "--per-contig" => {
+                per_contig = true;
+            }
             "--reference-sketch" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(
@@ -1480,6 +1493,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         tmp_dir,
         out_path,
         mapping_stats_path,
+        per_contig,
         bgzip,
         emit_header,
         verbose,

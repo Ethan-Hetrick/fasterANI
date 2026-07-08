@@ -17,10 +17,10 @@ use crate::ani::{
     emit_progress, fastani_compatible_fragment_mode, final_ani_computation,
     is_no_usable_fragments_error, legacy_sketch_path, manifest_path,
     map_query_to_reference_parallel, open_fasta_reader, parse_cli_args, peak_rss_kb,
-    performance_metrics_enabled, shard_entry_path, AniComputation, CliArgs, MappingMetrics,
-    MappingOutput, MappingResult, MappingResultKey, QueryFile, QueryFragment, ReferenceContigName,
-    ReferenceFile, ReferenceSketch, RuntimeOptions, ShardedBuildOptions, SketchDatabase,
-    SketchParams,
+    performance_metrics_enabled, shard_entry_path, AniComputation, AniSummary, CliArgs,
+    ContigAniSummary, MappingMetrics, MappingOutput, MappingResult, MappingResultKey, QueryFile,
+    QueryFragment, ReferenceContigName, ReferenceFile, ReferenceSketch, RuntimeOptions,
+    ShardedBuildOptions, SketchDatabase, SketchParams,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
@@ -161,11 +161,80 @@ fn collect_query_mappings(
     })
 }
 
-fn write_results_header(output: &mut dyn Write) -> io::Result<()> {
+fn write_results_header(output: &mut dyn Write, per_contig: bool) -> io::Result<()> {
+    if per_contig {
+        writeln!(
+            output,
+            "query_file\treference_file\tquery_contig\teligible_fragments\tshared_fragments\tshared_bases\tANI\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
+        )
+    } else {
+        writeln!(
+            output,
+            "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
+        )
+    }
+}
+
+fn aggregate_values(
+    summary: &AniSummary,
+    query_mapped_length: u64,
+    fragment_length: u32,
+) -> (f64, f64, f64) {
+    let total_fragment_equivalents: f64 = query_mapped_length as f64 / fragment_length as f64;
+    let aligned_fraction: f64 = if total_fragment_equivalents > 0.0 {
+        let shared_fragment_equivalents: f64 = summary.shared_bases as f64 / fragment_length as f64;
+        shared_fragment_equivalents / total_fragment_equivalents
+    } else {
+        f64::NAN
+    };
+    let ani: f64 = if summary.shared_bases > 0 {
+        summary.weighted_identity_sum / summary.shared_bases as f64
+    } else {
+        f64::NAN
+    };
+
+    (ani, aligned_fraction, total_fragment_equivalents)
+}
+
+fn contig_ani(summary: &AniSummary) -> f64 {
+    if summary.shared_bases > 0 {
+        summary.weighted_identity_sum / summary.shared_bases as f64
+    } else {
+        f64::NAN
+    }
+}
+
+fn write_aggregate_summary_comments(
+    reference_files: &[ReferenceFile],
+    summaries: &[AniSummary],
+    query_path: &str,
+    query_mapped_length: u64,
+    fragment_length: u32,
+    output: &mut dyn Write,
+) -> io::Result<()> {
     writeln!(
         output,
-        "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
-    )
+        "# aggregate_summary_header\tquery_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
+    )?;
+
+    for (reference_file, summary) in reference_files.iter().zip(summaries) {
+        let (ani, aligned_fraction, total_fragment_equivalents) =
+            aggregate_values(summary, query_mapped_length, fragment_length);
+        let stats = summary.distribution_stats;
+        writeln!(
+            output,
+            "# aggregate_summary\t{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+            reference_file.path,
+            stats.median,
+            stats.stddev,
+            stats.ci_95_upper,
+            stats.ci_95_lower,
+            stats.f99,
+            stats.f80,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn write_mapping_stats_header(output: &mut dyn Write) -> io::Result<()> {
@@ -280,6 +349,43 @@ fn write_mapping_stats(
     Ok(())
 }
 
+fn write_per_contig_results(
+    reference_files: &[ReferenceFile],
+    contig_summaries: &[Vec<ContigAniSummary>],
+    query_file: &QueryFile,
+    query_path: &str,
+    output: &mut dyn Write,
+) -> io::Result<()> {
+    for (reference_file, per_contig) in reference_files.iter().zip(contig_summaries) {
+        for (contig_id, contig_name) in query_file.contig_names.iter().enumerate() {
+            let contig_summary = per_contig
+                .get(contig_id)
+                .cloned()
+                .unwrap_or_else(ContigAniSummary::default);
+            let summary = contig_summary.summary;
+            let stats = summary.distribution_stats;
+            writeln!(
+                output,
+                "{query_path}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                reference_file.path,
+                contig_name,
+                contig_summary.eligible_fragments,
+                summary.shared_fragments,
+                summary.shared_bases,
+                contig_ani(&summary),
+                stats.median,
+                stats.stddev,
+                stats.ci_95_upper,
+                stats.ci_95_lower,
+                stats.f99,
+                stats.f80,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_query_outputs(
     reference_files: &[ReferenceFile],
@@ -290,10 +396,13 @@ fn write_query_outputs(
     output: &mut dyn Write,
     mapping_stats_output: Option<&mut (dyn Write + '_)>,
     fragment_length: u32,
+    per_contig: bool,
+    emit_header: bool,
 ) -> io::Result<QueryOutputStats> {
     if let Some(stats_output) = mapping_stats_output {
         let reciprocal_keys = final_ani_computation(
             mapping_results.clone(),
+            query_file,
             reference_files.len(),
             fragment_length,
         )
@@ -310,36 +419,65 @@ fn write_query_outputs(
     }
 
     let summary_start: Instant = Instant::now();
-    let ani_computation: AniComputation =
-        final_ani_computation(mapping_results, reference_files.len(), fragment_length);
+    let ani_computation: AniComputation = final_ani_computation(
+        mapping_results,
+        query_file,
+        reference_files.len(),
+        fragment_length,
+    );
     let summary_elapsed: std::time::Duration = summary_start.elapsed();
 
     let query_mapped_length: u64 = query_file.mapped_length();
     let mut pair_stats: PairSummaryStats = PairSummaryStats::default();
 
-    for (reference_file, summary) in reference_files.iter().zip(ani_computation.summaries) {
+    if per_contig {
+        write_aggregate_summary_comments(
+            reference_files,
+            &ani_computation.summaries,
+            query_path,
+            query_mapped_length,
+            fragment_length,
+            output,
+        )?;
+        if emit_header {
+            write_results_header(output, per_contig)?;
+        }
+        write_per_contig_results(
+            reference_files,
+            &ani_computation.contig_summaries,
+            query_file,
+            query_path,
+            output,
+        )?;
+    }
+
+    if emit_header && !per_contig {
+        write_results_header(output, per_contig)?;
+    }
+
+    for (reference_file, summary) in reference_files.iter().zip(ani_computation.summaries.iter()) {
         if summary.shared_fragments == 0 {
             continue;
         }
 
-        let ani: f64 = summary.weighted_identity_sum / summary.shared_bases as f64;
-        let shared_fragment_equivalents: f64 = summary.shared_bases as f64 / fragment_length as f64;
-        let total_fragment_equivalents: f64 = query_mapped_length as f64 / fragment_length as f64;
-        let aligned_fraction: f64 = shared_fragment_equivalents / total_fragment_equivalents;
+        let (ani, aligned_fraction, total_fragment_equivalents) =
+            aggregate_values(summary, query_mapped_length, fragment_length);
         let stats = summary.distribution_stats;
         // P99/P80 are still computed in AniDistributionStats for future experimentation,
         // but are intentionally not reported while their interpretation is unsettled.
-        writeln!(
-            output,
-            "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
-            reference_file.path,
-            stats.median,
-            stats.stddev,
-            stats.ci_95_upper,
-            stats.ci_95_lower,
-            stats.f99,
-            stats.f80,
-        )?;
+        if !per_contig {
+            writeln!(
+                output,
+                "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                reference_file.path,
+                stats.median,
+                stats.stddev,
+                stats.ci_95_upper,
+                stats.ci_95_lower,
+                stats.f99,
+                stats.f80,
+            )?;
+        }
         pair_stats.record_pair(ani, aligned_fraction);
     }
 
@@ -359,6 +497,7 @@ fn map_query_against_reference_sketch(
     performance_metrics_enabled: bool,
     output: &mut dyn Write,
     mapping_stats_output: Option<&mut (dyn Write + '_)>,
+    emit_header: bool,
 ) -> io::Result<QueryMappingStats> {
     let raw_stats: RawQueryMappingStats = collect_query_mappings(
         reference_sketch,
@@ -381,6 +520,8 @@ fn map_query_against_reference_sketch(
         output,
         mapping_stats_output,
         args.fragment_length,
+        args.per_contig,
+        emit_header,
     )?;
 
     Ok(QueryMappingStats {
@@ -511,9 +652,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
         Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         None => Box::new(BufWriter::new(io::stdout())),
     };
-    if args.emit_header {
-        write_results_header(&mut *output)?;
-    }
+    let mut results_header_written: bool = false;
     let mut mapping_stats_output: Option<Box<dyn Write>> = match &args.mapping_stats_path {
         Some(path) => {
             let mut writer: Box<dyn Write> = Box::new(BufWriter::new(fs::File::create(path)?));
@@ -604,6 +743,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 args.fragment_stride,
                 args.min_fragment_length,
                 args.split_n_run,
+                args.per_contig,
             ) {
                 Ok(query_file) => query_file,
                 Err(error) if args.queries.len() > 1 && is_no_usable_fragments_error(&error) => {
@@ -796,7 +936,12 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                     &mut *output,
                     mapping_stats_output.as_deref_mut(),
                     args.fragment_length,
+                    args.per_contig,
+                    args.emit_header && !results_header_written,
                 )?;
+                if args.emit_header {
+                    results_header_written = true;
+                }
                 summary_elapsed += stats.summary_elapsed;
                 emitted_pairs += stats.pair_stats.emitted_pairs;
                 pair_summary_stats.merge(stats.pair_stats);
@@ -849,6 +994,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 args.fragment_stride,
                 args.min_fragment_length,
                 args.split_n_run,
+                args.per_contig,
             ) {
                 Ok(query_file) => query_file,
                 Err(error) if args.queries.len() > 1 && is_no_usable_fragments_error(&error) => {
@@ -905,7 +1051,11 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 performance_metrics_enabled,
                 &mut *output,
                 mapping_stats_output.as_deref_mut(),
+                args.emit_header && !results_header_written,
             )?;
+            if args.emit_header {
+                results_header_written = true;
+            }
             mapping_elapsed += stats.mapping_elapsed;
             summary_elapsed += stats.summary_elapsed;
             mapping_count += stats.mapping_count;

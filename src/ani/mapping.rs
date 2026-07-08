@@ -10,8 +10,8 @@ use rayon::prelude::*;
 use crate::ani::{
     binomial_survival, estimate_relaxed_minimum_shared_minimizers, query_fragment_ranges,
     query_fragment_sketch, split_sequence_ranges, t_cdf_approx, AniComputation,
-    AniDistributionStats, AniSummary, MappingMetrics, MappingOutput, MappingResult,
-    MappingResultKey, MappingScratch, QueryFile, QueryFragment, QueryFragmentSketch,
+    AniDistributionStats, AniSummary, ContigAniSummary, MappingMetrics, MappingOutput,
+    MappingResult, MappingResultKey, MappingScratch, QueryFile, QueryFragment, QueryFragmentSketch,
     ReferenceMinimizer, ReferenceSketch,
 };
 #[cfg(debug_assertions)]
@@ -36,6 +36,7 @@ impl QueryFile {
         fragment_stride: u32,
         min_fragment_length: u32,
         split_n_run: usize,
+        allow_empty_fragments: bool,
     ) -> io::Result<Self> {
         let mut fragments: Vec<QueryFragment> = Vec::new();
         let mut contig_names: Vec<String> = Vec::new();
@@ -95,7 +96,7 @@ impl QueryFile {
             }
         }
 
-        if fragments.is_empty() {
+        if fragments.is_empty() && !allow_empty_fragments {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "ERROR: Input has no usable fragments",
@@ -375,6 +376,7 @@ fn map_query_fragment_into(
 /// Collapse raw fragment mappings into final per-reference-file ANI summaries.
 pub(crate) fn final_ani_computation(
     mut mapping_results: Vec<MappingResult>,
+    query_file: &QueryFile,
     reference_file_count: usize,
     fragment_length: u32,
 ) -> AniComputation {
@@ -418,10 +420,32 @@ pub(crate) fn final_ani_computation(
     let mut summaries: Vec<AniSummary> = (0..reference_file_count)
         .map(|_| AniSummary::default())
         .collect::<Vec<_>>();
+    let mut contig_summaries: Vec<Vec<ContigAniSummary>> = (0..reference_file_count)
+        .map(|_| {
+            (0..query_file.contig_names.len())
+                .map(|_| ContigAniSummary::default())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let mut fragment_identities: Vec<Vec<f64>> = (0..reference_file_count)
         .map(|_| Vec::new())
         .collect::<Vec<_>>();
+    let mut contig_fragment_identities: Vec<Vec<Vec<f64>>> = (0..reference_file_count)
+        .map(|_| {
+            (0..query_file.contig_names.len())
+                .map(|_| Vec::new())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let mut reciprocal_best_keys: HashSet<MappingResultKey> = HashSet::new();
+
+    for fragment in &query_file.fragments {
+        for per_reference in &mut contig_summaries {
+            if let Some(contig_summary) = per_reference.get_mut(fragment.contig_id) {
+                contig_summary.eligible_fragments += 1;
+            }
+        }
+    }
 
     for mapping in summary_mappings {
         reciprocal_best_keys.insert(MappingResultKey::from_mapping(&mapping));
@@ -431,6 +455,16 @@ pub(crate) fn final_ani_computation(
         summary.weighted_identity_sum +=
             mapping.identity * f64::from(mapping.query_fragment_length);
         fragment_identities[mapping.reference_file_id].push(mapping.identity);
+        if let Some(query_fragment) = query_file.fragments.get(mapping.query_fragment_id) {
+            let contig_summary =
+                &mut contig_summaries[mapping.reference_file_id][query_fragment.contig_id].summary;
+            contig_summary.shared_fragments += 1;
+            contig_summary.shared_bases += u64::from(mapping.query_fragment_length);
+            contig_summary.weighted_identity_sum +=
+                mapping.identity * f64::from(mapping.query_fragment_length);
+            contig_fragment_identities[mapping.reference_file_id][query_fragment.contig_id]
+                .push(mapping.identity);
+        }
     }
 
     for (summary, identities) in summaries.iter_mut().zip(&fragment_identities) {
@@ -438,9 +472,22 @@ pub(crate) fn final_ani_computation(
             summary.distribution_stats = compute_distribution_stats(identities);
         }
     }
+    for (per_reference_summary, per_reference_identities) in
+        contig_summaries.iter_mut().zip(&contig_fragment_identities)
+    {
+        for (contig_summary, identities) in per_reference_summary
+            .iter_mut()
+            .zip(per_reference_identities)
+        {
+            if !identities.is_empty() {
+                contig_summary.summary.distribution_stats = compute_distribution_stats(identities);
+            }
+        }
+    }
 
     AniComputation {
         summaries,
+        contig_summaries,
         reciprocal_best_keys,
     }
 }
