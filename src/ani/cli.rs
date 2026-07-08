@@ -65,6 +65,7 @@ Inputs:
                                  stdin (optionally gzip-compressed).
   --query-list <path>          File of query FASTA paths, one per line.
   --query-name <label>         Display/path label for a stdin query (with `--query -`).
+  --skip-validation            When specified, file checks are not performed on input FASTA files.
 
 Output:
   --out <path>                 Write results TSV here (default: stdout).
@@ -140,9 +141,60 @@ Resources:
   -v, --version                Show version."
 }
 
+const MIN_FASTA_FILE_BYTES: u64 = 100;
+
+fn validate_fasta_file_path(
+    path: &Path,
+    input_kind: &str,
+    original_path: &str,
+    list_path: Option<&str>,
+) -> io::Result<()> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() > MIN_FASTA_FILE_BYTES => Ok(()),
+        Ok(meta) if meta.is_file() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            match list_path {
+                Some(_) => format!(
+                    "Path in list is too small: {} ({} bytes, must be > {MIN_FASTA_FILE_BYTES})",
+                    original_path,
+                    meta.len()
+                ),
+                None => format!(
+                    "{input_kind} file is too small: {} ({} bytes, must be > {MIN_FASTA_FILE_BYTES})",
+                    path.display(),
+                    meta.len()
+                ),
+            },
+        )),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            match list_path {
+                Some(_) => format!("Path in list is not a file: {}", original_path),
+                None => format!("{input_kind} path is not a file: {}", path.display()),
+            },
+        )),
+        Err(err) => Err(io::Error::new(
+            err.kind(),
+            match list_path {
+                Some(list_path) => format!(
+                    "Cannot access path '{}' from list: {}\n{}",
+                    original_path, list_path, err
+                ),
+                None => format!(
+                    "Cannot access {} file {}: {}",
+                    input_kind.to_ascii_lowercase(),
+                    path.display(),
+                    err
+                ),
+            },
+        )),
+    }
+}
+
 fn validate_and_read_path_list_from_base(
     list_path: &str,
     base_dir: Option<&Path>,
+    skip_validation: bool,
 ) -> io::Result<(PathBuf, Vec<String>)> {
     let absolute_path = resolve_path_from_base(list_path, base_dir)?;
     let contents = fs::read_to_string(&absolute_path)?;
@@ -160,27 +212,10 @@ fn validate_and_read_path_list_from_base(
         }
 
         let absolute_item_path = resolve_path_from_base(path, list_base_dir)?;
-
-        match fs::metadata(&absolute_item_path) {
-            Ok(meta) if meta.is_file() => {
-                valid_paths.push(absolute_item_path.to_string_lossy().into_owned());
-            }
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Path in list is not a file: {}", path),
-                ));
-            }
-            Err(e) => {
-                return Err(io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Cannot access path '{}' from list: {}\n{}",
-                        path, list_path, e
-                    ),
-                ));
-            }
+        if !skip_validation {
+            validate_fasta_file_path(&absolute_item_path, "Input", path, Some(list_path))?;
         }
+        valid_paths.push(absolute_item_path.to_string_lossy().into_owned());
     }
     Ok((absolute_path, valid_paths))
 }
@@ -553,31 +588,13 @@ fn add_reference_file(
     value: &str,
     source: ParameterSource,
     base_dir: Option<&Path>,
+    skip_validation: bool,
     references: &mut Vec<FastaInput>,
     startup_output: &mut RuntimeStartupOutput,
 ) -> io::Result<()> {
     let reference_absolute_path = resolve_path_from_base(value, base_dir)?;
-    match fs::metadata(&reference_absolute_path) {
-        Ok(meta) if meta.is_file() => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Reference path is not a file: {}",
-                    reference_absolute_path.display()
-                ),
-            ));
-        }
-        Err(err) => {
-            return Err(io::Error::new(
-                err.kind(),
-                format!(
-                    "Cannot access reference file {}: {}",
-                    reference_absolute_path.display(),
-                    err
-                ),
-            ));
-        }
+    if !skip_validation {
+        validate_fasta_file_path(&reference_absolute_path, "Reference", value, None)?;
     }
 
     startup_output.reference_files.push(StartupValue::new(
@@ -596,10 +613,12 @@ fn add_reference_list(
     value: &str,
     source: ParameterSource,
     base_dir: Option<&Path>,
+    skip_validation: bool,
     references: &mut Vec<FastaInput>,
     startup_output: &mut RuntimeStartupOutput,
 ) -> io::Result<()> {
-    let (absolute_path, validated_paths) = validate_and_read_path_list_from_base(value, base_dir)?;
+    let (absolute_path, validated_paths) =
+        validate_and_read_path_list_from_base(value, base_dir, skip_validation)?;
     match fs::exists(&absolute_path) {
         Ok(true) => {}
         Ok(false) => eprintln!(
@@ -625,6 +644,7 @@ fn add_query_file(
     value: &str,
     source: ParameterSource,
     base_dir: Option<&Path>,
+    skip_validation: bool,
     queries: &mut Vec<FastaInput>,
     startup_output: &mut RuntimeStartupOutput,
 ) -> io::Result<()> {
@@ -637,27 +657,8 @@ fn add_query_file(
     }
 
     let query_absolute_path = resolve_path_from_base(value, base_dir)?;
-    match fs::metadata(&query_absolute_path) {
-        Ok(meta) if meta.is_file() => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Query path is not a file: {}",
-                    query_absolute_path.display()
-                ),
-            ));
-        }
-        Err(err) => {
-            return Err(io::Error::new(
-                err.kind(),
-                format!(
-                    "Cannot access query file {}: {}",
-                    query_absolute_path.display(),
-                    err
-                ),
-            ));
-        }
+    if !skip_validation {
+        validate_fasta_file_path(&query_absolute_path, "Query", value, None)?;
     }
     startup_output.query_files.push(StartupValue::new(
         query_absolute_path.to_string_lossy().into_owned(),
@@ -675,10 +676,12 @@ fn add_query_list(
     value: &str,
     source: ParameterSource,
     base_dir: Option<&Path>,
+    skip_validation: bool,
     queries: &mut Vec<FastaInput>,
     startup_output: &mut RuntimeStartupOutput,
 ) -> io::Result<()> {
-    let (absolute_path, validated_paths) = validate_and_read_path_list_from_base(value, base_dir)?;
+    let (absolute_path, validated_paths) =
+        validate_and_read_path_list_from_base(value, base_dir, skip_validation)?;
     match fs::exists(&absolute_path) {
         Ok(true) => {}
         Ok(false) => eprintln!(
@@ -750,6 +753,7 @@ fn parse_shard_filter(s: &str) -> io::Result<HashSet<usize>> {
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let raw_args: Vec<String> = env::args().skip(1).collect();
     let params_file_path = extract_params_file_path(&raw_args)?;
+    let skip_validation = raw_args.iter().any(|arg| arg == "--skip-validation");
     let params_file_config = match params_file_path.as_deref() {
         Some(path) => load_params_file(path)?,
         None => ParamsFileConfig::default(),
@@ -805,6 +809,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 reference_file,
                 ParameterSource::ParamsFile,
                 params_file_base_dir,
+                skip_validation,
                 &mut references,
                 &mut startup_output,
             )?;
@@ -816,6 +821,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 reference_list,
                 ParameterSource::ParamsFile,
                 params_file_base_dir,
+                skip_validation,
                 &mut references,
                 &mut startup_output,
             )?;
@@ -827,6 +833,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 query_file,
                 ParameterSource::ParamsFile,
                 params_file_base_dir,
+                skip_validation,
                 &mut queries,
                 &mut startup_output,
             )?;
@@ -838,6 +845,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 query_list,
                 ParameterSource::ParamsFile,
                 params_file_base_dir,
+                skip_validation,
                 &mut queries,
                 &mut startup_output,
             )?;
@@ -962,6 +970,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     &value,
                     ParameterSource::Cli,
                     None,
+                    skip_validation,
                     &mut references,
                     &mut startup_output,
                 )?;
@@ -977,6 +986,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     &value,
                     ParameterSource::Cli,
                     None,
+                    skip_validation,
                     &mut references,
                     &mut startup_output,
                 )?;
@@ -997,6 +1007,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     &value,
                     ParameterSource::Cli,
                     None,
+                    skip_validation,
                     &mut queries,
                     &mut startup_output,
                 )?;
@@ -1023,10 +1034,12 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                     &value,
                     ParameterSource::Cli,
                     None,
+                    skip_validation,
                     &mut queries,
                     &mut startup_output,
                 )?;
             }
+            "--skip-validation" => {}
             "--reference-sketch" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(

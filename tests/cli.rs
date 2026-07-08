@@ -560,3 +560,129 @@ query_files = ["{query}"]
 
     let _ = fs::remove_dir_all(temp_dir);
 }
+
+#[test]
+fn direct_reference_paths_are_validated() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let query = fixture_path("Shigella_flexneri_2a_01.fna");
+
+    let output = Command::new(exe)
+        .args(["--reference", "missing-reference.fna", "--query", &query])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("Cannot access reference file"));
+    assert!(stderr.contains("missing-reference.fna"));
+}
+
+#[test]
+fn fasta_validation_rejects_non_file_path() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("non-file-reference");
+    let query = fixture_path("Shigella_flexneri_2a_01.fna");
+
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            temp_dir.to_str().expect("utf-8 temp dir"),
+            "--query",
+            &query,
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("Reference path is not a file"));
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn fasta_validation_rejects_files_of_100_bytes_or_less() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let reference = fixture_path("empty.fasta");
+    let query = fixture_path("Shigella_flexneri_2a_01.fna");
+
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            &reference,
+            "--query",
+            &query,
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("Reference file is too small"));
+    assert!(stderr.contains("must be > 100"));
+}
+
+#[test]
+fn skip_validation_bypasses_missing_direct_fasta_check() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let query = fixture_path("Shigella_flexneri_2a_01.fna");
+
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            "missing-reference.fna",
+            "--query",
+            &query,
+            "--skip-validation",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded with missing input"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(!stderr.contains("Cannot access reference file"));
+}
+
+#[test]
+fn skip_validation_bypasses_missing_list_entry_check() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("skip-validation-list-entry");
+    let reference_list = temp_dir.join("references.txt");
+    let query = fixture_path("Shigella_flexneri_2a_01.fna");
+    fs::write(&reference_list, "missing-reference.fna\n").expect("write reference list");
+
+    let output = Command::new(exe)
+        .args([
+            "--reference-list",
+            reference_list.to_str().expect("utf-8 reference list"),
+            "--query",
+            &query,
+            "--skip-validation",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded with missing list entry"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(!stderr.contains("Cannot access path 'missing-reference.fna' from list"));
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
