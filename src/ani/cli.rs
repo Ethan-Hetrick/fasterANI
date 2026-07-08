@@ -53,8 +53,9 @@ fn usage() -> &'static str {
 
 Inputs:
   --params-file <path>         Load runtime parameters from a TOML file.
-                                 Values in the file override defaults; CLI arguments override
-                                 file values. Relative paths in the file are resolved relative
+                                 Scalar CLI values override scalar file values.
+                                 Reference/query inputs from both sources are combined.
+                                 Relative paths in the file are resolved relative
                                  to the TOML file's directory.
   --reference <path>           Reference FASTA (optionally gzip-compressed).
   --reference-list <path>      File of reference FASTA paths, one per line.
@@ -117,10 +118,11 @@ Fragmenting (how each query contig is cut into fragments):
 Fragment mapping (thresholds applied to each individual fragment alignment):
   --mash-threshold <0..100>    Minimum Mash identity for a query fragment to count towards
                                  the final ANI (default 80).
-  --mash-confidence <0..1>     Confidence interval width for the Mash upper-identity bound
+  --mash-confidence <0..=1>    Confidence interval width for the Mash upper-identity bound
                                  used in fragment filtering (default 0.9).
                                  Higher values are more permissive; 0.9 uses one-sided
-                                 tail alpha 0.05.
+                                 tail alpha 0.05. Use 0 to disable this relaxation;
+                                 1 is accepted but usually not advised.
 
   Per genome pair, fasterANI keeps only reciprocal-best fragment mappings and reports
     ANI as the length-weighted mean of those retained fragments' identities.
@@ -1211,23 +1213,23 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 }
                 sources.threads = Some(ParameterSource::Cli);
             }
-            "--freq-threshold-percent" => {
+            "--max-reference-frequency" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "--freq-threshold-percent requires a value",
+                        "--max-reference-frequency requires a value",
                     )
                 })?;
                 freq_threshold_percent = value.parse::<f64>().map_err(|err| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("invalid --freq-threshold-percent value {value:?}: {err}"),
+                        format!("invalid --max-reference-frequency value {value:?}: {err}"),
                     )
                 })?;
                 if !(0.0..=100.0).contains(&freq_threshold_percent) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "--freq-threshold-percent must be between 0 and 100",
+                        "--max-reference-frequency must be between 0 and 100",
                     ));
                 }
                 sources.freq_threshold_percent = Some(ParameterSource::Cli);
@@ -1328,7 +1330,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 eprintln!("{}", usage());
                 return Ok(None);
             }
-            "--version" | "v" => {
+            "--version" | "-v" => {
                 eprintln!("fasterANI {}", env!("CARGO_PKG_VERSION"));
                 process::exit(0);
             }
@@ -1421,7 +1423,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     if !(0.0..=100.0).contains(&freq_threshold_percent) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--freq-threshold-percent must be between 0 and 100",
+            "--max-reference-frequency must be between 0 and 100",
         ));
     }
     if minmer_count == Some(0) {

@@ -20,7 +20,7 @@ pub(crate) enum AniError {
     FragmentLengthTooSmall,
     #[error("--mash-threshold must be a finite value between 0 and 100")]
     MashThresholdOutOfRange,
-    #[error("--mash-confidence must be a finite value in [0, 1)")]
+    #[error("--mash-confidence must be a finite value between 0 and 1")]
     MashConfidenceOutOfRange,
 }
 

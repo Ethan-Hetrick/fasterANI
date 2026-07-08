@@ -51,9 +51,27 @@ pub(crate) fn validate_mash_threshold(mash_threshold: f64) -> Result<(), AniErro
 }
 
 pub(crate) fn validate_mash_confidence(mash_confidence: f64) -> Result<(), AniError> {
-    if !mash_confidence.is_finite() || !(0.0..1.0).contains(&mash_confidence) {
+    if !mash_confidence.is_finite() || !(0.0..=1.0).contains(&mash_confidence) {
         return Err(AniError::MashConfidenceOutOfRange);
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_mash_confidence;
+
+    #[test]
+    fn mash_confidence_accepts_closed_unit_interval() {
+        validate_mash_confidence(0.0).expect("0 should be valid");
+        validate_mash_confidence(1.0).expect("1 should be valid");
+    }
+
+    #[test]
+    fn mash_confidence_rejects_values_outside_unit_interval() {
+        assert!(validate_mash_confidence(-0.1).is_err());
+        assert!(validate_mash_confidence(1.1).is_err());
+        assert!(validate_mash_confidence(f64::NAN).is_err());
+    }
 }

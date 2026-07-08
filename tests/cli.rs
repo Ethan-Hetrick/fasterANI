@@ -124,6 +124,90 @@ fn shards_flag_requires_reference_sketch() {
 }
 
 #[test]
+fn max_reference_frequency_flag_is_accepted() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("max-reference-frequency");
+    let out_path = temp_dir.join("out.tsv");
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            "assets/test-data/Escherichia_coli_str_K12_MG1655.fna",
+            "--query",
+            "assets/test-data/Shigella_flexneri_2a_01.fna",
+            "--max-reference-frequency",
+            "1.5",
+            "--out",
+            out_path.to_str().expect("utf-8 out path"),
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        output.status.success(),
+        "binary exited with status {:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("freq_threshold_percent = 1.5  # from CLI"));
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn old_freq_threshold_percent_flag_is_rejected() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            "assets/test-data/Escherichia_coli_str_K12_MG1655.fna",
+            "--query",
+            "assets/test-data/Shigella_flexneri_2a_01.fna",
+            "--freq-threshold-percent",
+            "1.5",
+        ])
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(
+        !output.status.success(),
+        "binary unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("unknown argument \"--freq-threshold-percent\""));
+}
+
+#[test]
+fn version_short_flag_is_dash_v_not_bare_v() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let version_output = Command::new(exe)
+        .arg("-v")
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        version_output.status.success(),
+        "-v unexpectedly failed: {}",
+        String::from_utf8_lossy(&version_output.stderr)
+    );
+    assert!(String::from_utf8(version_output.stderr)
+        .expect("stderr was not valid UTF-8")
+        .contains("fasterANI "));
+
+    let bare_v_output = Command::new(exe)
+        .arg("v")
+        .output()
+        .expect("failed to launch fasterANI binary");
+    assert!(
+        !bare_v_output.status.success(),
+        "bare v unexpectedly succeeded"
+    );
+    assert!(String::from_utf8(bare_v_output.stderr)
+        .expect("stderr was not valid UTF-8")
+        .contains("unknown argument \"v\""));
+}
+
+#[test]
 fn reference_is_optional_when_querying_existing_sharded_sketch() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
     let temp_dir = temp_test_dir("query-existing-sharded-sketch");

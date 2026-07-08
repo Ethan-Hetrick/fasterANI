@@ -189,6 +189,10 @@ pub(crate) fn mash_distance_lower_bound(
     kmer_size: usize,
     confidence_interval: f64,
 ) -> f64 {
+    if confidence_interval <= 0.0 {
+        return distance;
+    }
+
     let q2: f64 = (1.0 - confidence_interval) / 2.0;
     let jaccard: f64 = mash_distance_to_jaccard(distance, kmer_size);
     let mut x: usize = ((sketch_size as f64 * jaccard).ceil() as usize).max(1);
@@ -203,6 +207,7 @@ pub(crate) fn mash_distance_lower_bound(
 
         x += 1;
     }
+    x = x.min(sketch_size);
 
     fastani_mash_distance(x as f64 / sketch_size as f64, kmer_size)
 }
@@ -248,10 +253,20 @@ pub(crate) fn estimate_relaxed_minimum_shared_minimizers(
 
 #[cfg(test)]
 mod tests {
-    use super::t_cdf_approx;
+    use super::{mash_distance_lower_bound, t_cdf_approx};
 
     #[test]
     fn t_cdf_approx_matches_table_value() {
         assert!((t_cdf_approx(2.262, 9.0) - 0.975).abs() < 0.01);
+    }
+
+    #[test]
+    fn mash_distance_lower_bound_handles_confidence_endpoints() {
+        let distance = 0.1;
+        assert_eq!(mash_distance_lower_bound(distance, 1_000, 16, 0.0), distance);
+
+        let full_confidence_bound = mash_distance_lower_bound(distance, 1_000, 16, 1.0);
+        assert!(full_confidence_bound.is_finite());
+        assert!(full_confidence_bound <= distance);
     }
 }
