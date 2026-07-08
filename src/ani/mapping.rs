@@ -543,11 +543,13 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
     let mut sorted_identities: Vec<f64> = fragment_identities.to_vec();
     sorted_identities.sort_by(f64::total_cmp);
 
-    let median: f64 = if count % 2 == 1 {
-        sorted_identities[count / 2]
-    } else {
-        (sorted_identities[(count / 2) - 1] + sorted_identities[count / 2]) / 2.0
-    };
+    let median: f64 = median_from_sorted(&sorted_identities);
+    let mut absolute_deviations: Vec<f64> = fragment_identities
+        .iter()
+        .map(|identity| (identity - median).abs())
+        .collect();
+    absolute_deviations.sort_by(f64::total_cmp);
+    let mad: f64 = median_from_sorted(&absolute_deviations);
     let f99: f64 = fraction_at_or_above(fragment_identities, 99.0);
     let f80: f64 = fraction_at_or_below(fragment_identities, 80.0);
 
@@ -556,6 +558,7 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
         return AniDistributionStats {
             median,
             stddev: f64::NAN,
+            mad,
             ci_95_lower: mean,
             ci_95_upper: mean,
             f99,
@@ -580,12 +583,22 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
     AniDistributionStats {
         median,
         stddev,
+        mad,
         ci_95_lower: mean - ci_delta,
         ci_95_upper: mean + ci_delta,
         f99,
-        p99: upper_tail_binomial_p_value(fragment_identities, mean, stddev, 99.0),
+        p99: upper_tail_binomial_p_value(fragment_identities, mean, mad, 99.0),
         f80,
-        p80: lower_tail_binomial_p_value(fragment_identities, mean, stddev, 80.0),
+        p80: lower_tail_binomial_p_value(fragment_identities, mean, mad, 80.0),
+    }
+}
+
+fn median_from_sorted(sorted_values: &[f64]) -> f64 {
+    let count: usize = sorted_values.len();
+    if count % 2 == 1 {
+        sorted_values[count / 2]
+    } else {
+        (sorted_values[(count / 2) - 1] + sorted_values[count / 2]) / 2.0
     }
 }
 
@@ -608,10 +621,10 @@ fn fraction_at_or_below(fragment_identities: &[f64], threshold: f64) -> f64 {
 fn upper_tail_binomial_p_value(
     fragment_identities: &[f64],
     mean: f64,
-    stddev: f64,
+    mad: f64,
     threshold: f64,
 ) -> f64 {
-    if !stddev.is_finite() || stddev <= 0.0 || fragment_identities.len() < 2 {
+    if !mad.is_finite() || mad <= 0.0 || fragment_identities.len() < 2 {
         return f64::NAN;
     }
 
@@ -620,7 +633,7 @@ fn upper_tail_binomial_p_value(
         .filter(|identity| **identity >= threshold)
         .count();
     let count: usize = fragment_identities.len();
-    let t_statistic: f64 = (threshold - mean) / stddev;
+    let t_statistic: f64 = (threshold - mean) / mad;
     let tail_probability: f64 = 1.0 - t_cdf_approx(t_statistic, (count - 1) as f64);
 
     binomial_survival(observed_at_or_above, tail_probability, count)
@@ -629,10 +642,10 @@ fn upper_tail_binomial_p_value(
 fn lower_tail_binomial_p_value(
     fragment_identities: &[f64],
     mean: f64,
-    stddev: f64,
+    mad: f64,
     threshold: f64,
 ) -> f64 {
-    if !stddev.is_finite() || stddev <= 0.0 || fragment_identities.len() < 2 {
+    if !mad.is_finite() || mad <= 0.0 || fragment_identities.len() < 2 {
         return f64::NAN;
     }
 
@@ -641,7 +654,7 @@ fn lower_tail_binomial_p_value(
         .filter(|identity| **identity <= threshold)
         .count();
     let count: usize = fragment_identities.len();
-    let t_statistic: f64 = (threshold - mean) / stddev;
+    let t_statistic: f64 = (threshold - mean) / mad;
     let tail_probability: f64 = t_cdf_approx(t_statistic, (count - 1) as f64);
 
     binomial_survival(observed_at_or_below, tail_probability, count)
@@ -693,12 +706,21 @@ mod tests {
     }
 
     #[test]
-    fn distribution_stats_flag_many_high_ani_fragments() {
-        let mut identities: Vec<f64> = vec![98.0; 900];
-        identities.extend(vec![99.0; 100]);
+    fn distribution_stats_compute_median_absolute_deviation() {
+        let stats = compute_distribution_stats(&[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]);
+
+        assert_close(stats.mad, 0.5);
+    }
+
+    #[test]
+    fn distribution_stats_flag_many_high_ani_fragments_using_mad() {
+        let mut identities: Vec<f64> = vec![97.0; 400];
+        identities.extend(vec![98.0; 400]);
+        identities.extend(vec![99.0; 200]);
 
         let stats = compute_distribution_stats(&identities);
 
+        assert_close(stats.mad, 1.0);
         assert!(
             stats.p99 < 0.05,
             "expected significant P99, got {}",
@@ -707,12 +729,14 @@ mod tests {
     }
 
     #[test]
-    fn distribution_stats_flag_many_low_ani_fragments() {
-        let mut identities: Vec<f64> = vec![81.0; 900];
-        identities.extend(vec![80.0; 100]);
+    fn distribution_stats_flag_many_low_ani_fragments_using_mad() {
+        let mut identities: Vec<f64> = vec![80.0; 200];
+        identities.extend(vec![81.0; 400]);
+        identities.extend(vec![82.0; 400]);
 
         let stats = compute_distribution_stats(&identities);
 
+        assert_close(stats.mad, 1.0);
         assert!(
             stats.p80 < 0.05,
             "expected significant P80, got {}",

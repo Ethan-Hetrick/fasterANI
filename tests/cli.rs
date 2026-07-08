@@ -31,18 +31,23 @@ fn fixture_path(name: &str) -> String {
 
 fn assert_expected_test_data_result(stdout: &str) {
     let fields: Vec<&str> = stdout.trim_end().split('\t').collect();
-    assert_eq!(fields.len(), 11, "unexpected result fields: {fields:?}");
+    assert_eq!(fields.len(), 12, "unexpected result fields: {fields:?}");
     assert_eq!(fields[0], "assets/test-data/Shigella_flexneri_2a_01.fna");
     assert_eq!(
         fields[1],
         "assets/test-data/Escherichia_coli_str_K12_MG1655.fna"
     );
-    assert_eq!(&fields[2..9], &["97.636", "0.807", "1608.00", "98.318", "2.500", "97.772", "97.500"]);
+    assert_eq!(
+        &fields[2..10],
+        &[
+            "97.636", "0.807", "1608.00", "98.318", "2.500", "0.645", "97.772", "97.500"
+        ]
+    );
 
-    for (index, field) in fields[9..].iter().enumerate() {
+    for (index, field) in fields[10..].iter().enumerate() {
         field
             .parse::<f64>()
-            .unwrap_or_else(|err| panic!("field {} was not numeric: {field:?}: {err}", index + 9));
+            .unwrap_or_else(|err| panic!("field {} was not numeric: {field:?}: {err}", index + 10));
     }
 }
 

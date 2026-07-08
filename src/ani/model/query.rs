@@ -100,6 +100,7 @@ pub(crate) struct ContigAniSummary {
 pub struct AniDistributionStats {
     pub median: f64,
     pub stddev: f64,
+    pub mad: f64,
     pub ci_95_lower: f64,
     pub ci_95_upper: f64,
     pub f99: f64,
@@ -117,6 +118,7 @@ impl Default for AniDistributionStats {
         Self {
             median: f64::NAN,
             stddev: f64::NAN,
+            mad: f64::NAN,
             ci_95_lower: f64::NAN,
             ci_95_upper: f64::NAN,
             f99: f64::NAN,

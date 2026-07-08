@@ -165,12 +165,12 @@ fn write_results_header(output: &mut dyn Write, per_contig: bool) -> io::Result<
     if per_contig {
         writeln!(
             output,
-            "query_file\treference_file\tquery_contig\teligible_fragments\tshared_fragments\tshared_bases\tANI\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
+            "query_file\treference_file\tquery_contig\teligible_fragments\tshared_fragments\tshared_bases\tANI\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80"
         )
     } else {
         writeln!(
             output,
-            "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
+            "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80"
         )
     }
 }
@@ -214,7 +214,7 @@ fn write_aggregate_summary_comments(
 ) -> io::Result<()> {
     writeln!(
         output,
-        "# aggregate_summary_header\tquery_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
+        "# aggregate_summary_header\tquery_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80"
     )?;
 
     for (reference_file, summary) in reference_files.iter().zip(summaries) {
@@ -223,10 +223,11 @@ fn write_aggregate_summary_comments(
         let stats = summary.distribution_stats;
         writeln!(
             output,
-            "# aggregate_summary\t{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+            "# aggregate_summary\t{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
             reference_file.path,
             stats.median,
             stats.stddev,
+            stats.mad,
             stats.ci_95_upper,
             stats.ci_95_lower,
             stats.f99,
@@ -366,7 +367,7 @@ fn write_per_contig_results(
             let stats = summary.distribution_stats;
             writeln!(
                 output,
-                "{query_path}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                "{query_path}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
                 reference_file.path,
                 contig_name,
                 contig_summary.eligible_fragments,
@@ -375,6 +376,7 @@ fn write_per_contig_results(
                 contig_ani(&summary),
                 stats.median,
                 stats.stddev,
+                stats.mad,
                 stats.ci_95_upper,
                 stats.ci_95_lower,
                 stats.f99,
@@ -468,10 +470,11 @@ fn write_query_outputs(
         if !per_contig {
             writeln!(
                 output,
-                "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
                 reference_file.path,
                 stats.median,
                 stats.stddev,
+                stats.mad,
                 stats.ci_95_upper,
                 stats.ci_95_lower,
                 stats.f99,

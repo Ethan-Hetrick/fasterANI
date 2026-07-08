@@ -89,6 +89,7 @@ Output:
     total_fragments      Mappable query bases / fragment_length (non-integer).
     median_ANI           Median fragment ANI; less sensitive to outliers than the ANI.
     stddev               Standard deviation of fragment ANI.
+    MAD                  Median absolute deviation of fragment ANI from median_ANI.
     ci_95_upper          95% upper confidence interval for ANI
     ci_95_lower          95% lower confidence interval for ANI
     F99                  Fraction of retained fragments with ANI >= 99%.
@@ -99,7 +100,7 @@ Output:
         with NaN ANI fields.
         --per-contig output columns are: query_file, reference_file,
         query_contig, eligible_fragments, shared_fragments, shared_bases,
-        ANI, median_ANI, stddev, ci_95_upper, ci_95_lower, F99, F80.
+        ANI, median_ANI, stddev, MAD, ci_95_upper, ci_95_lower, F99, F80.
 
 Seeding (minimizer sketch; applies to both references and queries):
   --kmer-size <n>              K-mer size for minimizers (default 16).
