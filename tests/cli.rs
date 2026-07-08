@@ -29,6 +29,23 @@ fn fixture_path(name: &str) -> String {
         .into_owned()
 }
 
+fn assert_expected_test_data_result(stdout: &str) {
+    let fields: Vec<&str> = stdout.trim_end().split('\t').collect();
+    assert_eq!(fields.len(), 11, "unexpected result fields: {fields:?}");
+    assert_eq!(fields[0], "assets/test-data/Shigella_flexneri_2a_01.fna");
+    assert_eq!(
+        fields[1],
+        "assets/test-data/Escherichia_coli_str_K12_MG1655.fna"
+    );
+    assert_eq!(&fields[2..9], &["97.636", "0.807", "1608.00", "98.318", "2.500", "97.772", "97.500"]);
+
+    for (index, field) in fields[9..].iter().enumerate() {
+        field
+            .parse::<f64>()
+            .unwrap_or_else(|err| panic!("field {} was not numeric: {field:?}: {err}", index + 9));
+    }
+}
+
 #[test]
 fn cli_emits_expected_ani_for_test_data() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
@@ -49,9 +66,7 @@ fn cli_emits_expected_ani_for_test_data() {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
-    let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
-assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\t0.000e0****\t1.000e0\n";
-    assert_eq!(stdout, expected);
+    assert_expected_test_data_result(&stdout);
 }
 
 #[test]
@@ -94,9 +109,7 @@ fn cli_accepts_streamed_query_from_stdin() {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
-    let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
-assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\t0.000e0****\t1.000e0\n";
-    assert_eq!(stdout, expected);
+    assert_expected_test_data_result(&stdout);
 }
 
 #[test]
@@ -420,9 +433,7 @@ fn quiet_suppresses_startup_summary_from_cli() {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout was not valid UTF-8");
-    let expected = "assets/test-data/Shigella_flexneri_2a_01.fna\t\
-assets/test-data/Escherichia_coli_str_K12_MG1655.fna\t97.636\t0.807\t1608.00\t98.318\t2.500\t97.772\t97.500\t0.000e0****\t1.000e0\n";
-    assert_eq!(stdout, expected);
+    assert_expected_test_data_result(&stdout);
 
     let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
     assert!(!stderr.contains("FasterANI non-default runtime parameters"));

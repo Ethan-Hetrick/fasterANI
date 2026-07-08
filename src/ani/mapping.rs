@@ -501,6 +501,8 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
     } else {
         (sorted_identities[(count / 2) - 1] + sorted_identities[count / 2]) / 2.0
     };
+    let f99: f64 = fraction_at_or_above(fragment_identities, 99.0);
+    let f80: f64 = fraction_at_or_below(fragment_identities, 80.0);
 
     let mean: f64 = fragment_identities.iter().sum::<f64>() / count as f64;
     if count == 1 {
@@ -509,7 +511,9 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
             stddev: f64::NAN,
             ci_95_lower: mean,
             ci_95_upper: mean,
+            f99,
             p99: f64::NAN,
+            f80,
             p80: f64::NAN,
         };
     }
@@ -531,9 +535,27 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
         stddev,
         ci_95_lower: mean - ci_delta,
         ci_95_upper: mean + ci_delta,
+        f99,
         p99: upper_tail_binomial_p_value(fragment_identities, mean, stddev, 99.0),
+        f80,
         p80: lower_tail_binomial_p_value(fragment_identities, mean, stddev, 80.0),
     }
+}
+
+fn fraction_at_or_above(fragment_identities: &[f64], threshold: f64) -> f64 {
+    fragment_identities
+        .iter()
+        .filter(|identity| **identity >= threshold)
+        .count() as f64
+        / fragment_identities.len() as f64
+}
+
+fn fraction_at_or_below(fragment_identities: &[f64], threshold: f64) -> f64 {
+    fragment_identities
+        .iter()
+        .filter(|identity| **identity <= threshold)
+        .count() as f64
+        / fragment_identities.len() as f64
 }
 
 fn upper_tail_binomial_p_value(

@@ -164,7 +164,7 @@ fn collect_query_mappings(
 fn write_results_header(output: &mut dyn Write) -> io::Result<()> {
     writeln!(
         output,
-        "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tP99\tP80"
+        "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tci_95_upper\tci_95_lower\tF99\tF80"
     )
 }
 
@@ -175,6 +175,9 @@ fn write_mapping_stats_header(output: &mut dyn Write) -> io::Result<()> {
     )
 }
 
+// Kept with the hidden P99/P80 calculations so significance markers can be
+// restored deliberately if those columns are reintroduced.
+#[allow(dead_code)]
 fn significance_stars(p_value: f64) -> &'static str {
     if p_value < 0.0001 {
         "****"
@@ -324,18 +327,18 @@ fn write_query_outputs(
         let total_fragment_equivalents: f64 = query_mapped_length as f64 / fragment_length as f64;
         let aligned_fraction: f64 = shared_fragment_equivalents / total_fragment_equivalents;
         let stats = summary.distribution_stats;
+        // P99/P80 are still computed in AniDistributionStats for future experimentation,
+        // but are intentionally not reported while their interpretation is unsettled.
         writeln!(
             output,
-            "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3e}{}\t{:.3e}{}",
+            "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
             reference_file.path,
             stats.median,
             stats.stddev,
             stats.ci_95_upper,
             stats.ci_95_lower,
-            stats.p99,
-            significance_stars(stats.p99),
-            stats.p80,
-            significance_stars(stats.p80),
+            stats.f99,
+            stats.f80,
         )?;
         pair_stats.record_pair(ani, aligned_fraction);
     }

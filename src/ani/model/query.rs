@@ -95,7 +95,13 @@ pub struct AniDistributionStats {
     pub stddev: f64,
     pub ci_95_lower: f64,
     pub ci_95_upper: f64,
+    pub f99: f64,
+    // P99/P80 are kept for future evaluation, but are intentionally not part
+    // of the public TSV output until their interpretation is settled.
+    #[allow(dead_code)]
     pub p99: f64,
+    pub f80: f64,
+    #[allow(dead_code)]
     pub p80: f64,
 }
 
@@ -106,7 +112,9 @@ impl Default for AniDistributionStats {
             stddev: f64::NAN,
             ci_95_lower: f64::NAN,
             ci_95_upper: f64::NAN,
+            f99: f64::NAN,
             p99: f64::NAN,
+            f80: f64::NAN,
             p80: f64::NAN,
         }
     }

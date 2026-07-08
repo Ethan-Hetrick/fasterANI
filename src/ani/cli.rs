@@ -87,12 +87,8 @@ Output:
     stddev               Standard deviation of fragment ANI.
     ci_95_upper          95% upper confidence interval for ANI
     ci_95_lower          95% lower confidence interval for ANI
-    P99                  P-value from binomial test: probability of sampling >= this many
-                           fragments with ANI ≥ 99% under a t-distribution.
-                           (Experimental: values < 0.05 may indicate HGT or contamination)
-    P80                  P-value from binomial test: probability of sampling >= this many
-                           fragments with ANI <= 80% under a t-distribution.
-                           (Experimental: may indicate contamination)
+    F99                  Fraction of retained fragments with ANI >= 99%.
+    F80                  Fraction of retained fragments with ANI <= 80%.
 
   Note: Fragment counts may be fractional.
 
