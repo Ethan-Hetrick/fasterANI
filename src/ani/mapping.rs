@@ -551,8 +551,7 @@ fn upper_tail_binomial_p_value(
         .filter(|identity| **identity >= threshold)
         .count();
     let count: usize = fragment_identities.len();
-    let standard_error: f64 = stddev / (count as f64).sqrt();
-    let t_statistic: f64 = (threshold - mean) / standard_error;
+    let t_statistic: f64 = (threshold - mean) / stddev;
     let tail_probability: f64 = 1.0 - t_cdf_approx(t_statistic, (count - 1) as f64);
 
     binomial_survival(observed_at_or_above, tail_probability, count)
@@ -573,8 +572,7 @@ fn lower_tail_binomial_p_value(
         .filter(|identity| **identity <= threshold)
         .count();
     let count: usize = fragment_identities.len();
-    let standard_error: f64 = stddev / (count as f64).sqrt();
-    let t_statistic: f64 = (threshold - mean) / standard_error;
+    let t_statistic: f64 = (threshold - mean) / stddev;
     let tail_probability: f64 = t_cdf_approx(t_statistic, (count - 1) as f64);
 
     binomial_survival(observed_at_or_below, tail_probability, count)
@@ -627,7 +625,7 @@ mod tests {
 
     #[test]
     fn distribution_stats_flag_many_high_ani_fragments() {
-        let mut identities: Vec<f64> = vec![90.0; 900];
+        let mut identities: Vec<f64> = vec![98.0; 900];
         identities.extend(vec![99.0; 100]);
 
         let stats = compute_distribution_stats(&identities);
@@ -641,7 +639,7 @@ mod tests {
 
     #[test]
     fn distribution_stats_flag_many_low_ani_fragments() {
-        let mut identities: Vec<f64> = vec![95.0; 900];
+        let mut identities: Vec<f64> = vec![81.0; 900];
         identities.extend(vec![80.0; 100]);
 
         let stats = compute_distribution_stats(&identities);
