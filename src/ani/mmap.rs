@@ -173,7 +173,7 @@ fn mmap_slice_at<T>(mmap: &MmapFile, offset: usize, count: usize) -> &[T] {
         0
     );
 
-    unsafe { std::slice::from_raw_parts(mmap.as_slice().as_ptr().add(offset) as *const T, count) }
+    unsafe { std::slice::from_raw_parts(mmap.as_slice().as_ptr().add(offset).cast::<T>(), count) }
 }
 
 /// Read-only memory map wrapper for cached reference sketches.
@@ -219,7 +219,7 @@ impl MmapFile {
         }
 
         Ok(Self {
-            ptr: NonNull::new(ptr as *mut u8).expect("mmap returned null"),
+            ptr: NonNull::new(ptr.cast::<u8>()).expect("mmap returned null"),
             len,
         })
     }
@@ -231,7 +231,7 @@ impl MmapFile {
     pub(crate) fn prefetch_sequential(&self) {
         unsafe {
             libc::madvise(
-                self.ptr.as_ptr() as *mut libc::c_void,
+                self.ptr.as_ptr().cast::<libc::c_void>(),
                 self.len,
                 libc::MADV_SEQUENTIAL,
             );
@@ -253,7 +253,7 @@ impl ReferenceSketch {
 impl Drop for MmapFile {
     fn drop(&mut self) {
         unsafe {
-            libc::munmap(self.ptr.as_ptr() as *mut libc::c_void, self.len);
+            libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), self.len);
         }
     }
 }

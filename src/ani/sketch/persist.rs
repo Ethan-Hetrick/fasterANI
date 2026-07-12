@@ -422,8 +422,7 @@ impl ReferenceSketch {
         };
         let mmap_path: &Path = decompressed_sketch
             .as_ref()
-            .map(|scratch| scratch.path.as_path())
-            .unwrap_or(path);
+            .map_or(path, |scratch| scratch.path.as_path());
 
         let mut file: fs::File = fs::File::open(mmap_path)?;
         let mut magic: [u8; 8] = [0u8; 8];
@@ -666,8 +665,9 @@ impl ReferenceSketch {
             let keys_done: usize = key_index + 1;
             if (keys_done.is_multiple_of(SKETCH_KEY_PACK_PROGRESS_INTERVAL)
                 || keys_done == index.len())
-                && runtime_options.progress_enabled {
-                    emit_progress(
+                && runtime_options.progress_enabled
+            {
+                emit_progress(
                         "sketch_save",
                         &format!(
                             "event=pack_index\tmode=streaming\tkeys_done={keys_done}\tkey_count={}\thits_done={}",
@@ -676,7 +676,7 @@ impl ReferenceSketch {
                         ),
                         save_start,
                     );
-                }
+            }
         }
 
         let expected_reference_minimizer_bytes: u64 =

@@ -546,7 +546,7 @@ unsafe fn compute_8_ids_avx2(records: &[PartitionHitRecord; 8], shift: u32, out:
     // 0, 12, 24, 36, 48, 60, 72, 84 from the base of `records`.
     // _mm256_i32gather_epi32 with scale=1 uses raw byte offsets.
     let vindex = _mm256_set_epi32(84, 72, 60, 48, 36, 24, 12, 0);
-    let base = records.as_ptr() as *const i32;
+    let base = records.as_ptr().cast::<i32>();
 
     // Gather: reads records[i].key for i in 0..8 in one instruction.
     let keys = unsafe { _mm256_i32gather_epi32::<1>(base, vindex) };
@@ -560,7 +560,7 @@ unsafe fn compute_8_ids_avx2(records: &[PartitionHitRecord; 8], shift: u32, out:
     // Store 8 x u32 results.
     let mut result = [0u32; 8];
     unsafe {
-        _mm256_storeu_si256(result.as_mut_ptr() as *mut __m256i, shifted);
+        _mm256_storeu_si256(result.as_mut_ptr().cast::<__m256i>(), shifted);
     }
 
     for k in 0..8 {

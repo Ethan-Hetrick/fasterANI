@@ -301,8 +301,16 @@ fn build_reference_index(
         std::iter::once(0..all_hits.len()).collect()
     };
     let actual_ranges: usize = ranges.len();
-    let min_range_hits: usize = ranges.iter().map(|range| range.len()).min().unwrap_or(0);
-    let max_range_hits: usize = ranges.iter().map(|range| range.len()).max().unwrap_or(0);
+    let min_range_hits: usize = ranges
+        .iter()
+        .map(std::iter::ExactSizeIterator::len)
+        .min()
+        .unwrap_or(0);
+    let max_range_hits: usize = ranges
+        .iter()
+        .map(std::iter::ExactSizeIterator::len)
+        .max()
+        .unwrap_or(0);
 
     if let Some(start) = merge_start {
         emit_progress(
@@ -544,10 +552,7 @@ impl ReferenceSketch {
         if runtime_options.progress_enabled {
             emit_progress(
                 "reference_build",
-                &format!(
-                    "event=start\tfiles_total={}\tsplit_n_run={split_n_run}",
-                    total_files
-                ),
+                &format!("event=start\tfiles_total={total_files}\tsplit_n_run={split_n_run}"),
                 build_start,
             );
         }

@@ -39,9 +39,7 @@ fn assert_expected_test_data_result(stdout: &str) {
     );
     assert_eq!(
         &fields[2..10],
-        &[
-            "97.636", "0.807", "1608.00", "98.318", "2.500", "0.645", "97.772", "97.500"
-        ]
+        &["97.636", "0.807", "1608.00", "98.318", "2.500", "0.645", "97.772", "97.500"]
     );
 
     for (index, field) in fields[10..].iter().enumerate() {
@@ -715,12 +713,7 @@ fn fasta_validation_rejects_files_of_100_bytes_or_less() {
     let query = fixture_path("Shigella_flexneri_2a_01.fna");
 
     let output = Command::new(exe)
-        .args([
-            "--reference",
-            &reference,
-            "--query",
-            &query,
-        ])
+        .args(["--reference", &reference, "--query", &query])
         .output()
         .expect("failed to launch fasterANI binary");
 

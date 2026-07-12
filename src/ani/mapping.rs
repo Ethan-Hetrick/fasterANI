@@ -598,7 +598,7 @@ fn median_from_sorted(sorted_values: &[f64]) -> f64 {
     if count % 2 == 1 {
         sorted_values[count / 2]
     } else {
-        (sorted_values[(count / 2) - 1] + sorted_values[count / 2]) / 2.0
+        f64::midpoint(sorted_values[(count / 2) - 1], sorted_values[count / 2])
     }
 }
 

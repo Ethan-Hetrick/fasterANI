@@ -107,12 +107,14 @@ pub(crate) fn shard_path(prefix: &Path, shard_index: usize, bgzip: bool) -> Path
 pub(crate) fn shard_filename(prefix: &Path, shard_index: usize, bgzip: bool) -> String {
     shard_path(prefix, shard_index, bgzip)
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| {
-            shard_path(prefix, shard_index, bgzip)
-                .to_string_lossy()
-                .into_owned()
-        })
+        .map_or_else(
+            || {
+                shard_path(prefix, shard_index, bgzip)
+                    .to_string_lossy()
+                    .into_owned()
+            },
+            |name| name.to_string_lossy().into_owned(),
+        )
 }
 
 pub(crate) fn shard_entry_path(prefix: &Path, entry: &ShardManifestEntry) -> PathBuf {
@@ -199,8 +201,7 @@ pub(crate) fn write_contig_name_sidecar(
         for (contig_id, contig) in contig_names.iter().enumerate() {
             let reference_file: &str = files
                 .get(contig.file_id)
-                .map(|file| file.path.as_str())
-                .unwrap_or("unknown");
+                .map_or("unknown", |file| file.path.as_str());
             writeln!(
                 writer,
                 "{contig_id}\t{}\t{}\t{}\t{}\t{}",

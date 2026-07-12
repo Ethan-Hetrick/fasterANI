@@ -51,10 +51,8 @@ impl ReferenceSketch {
                 let hit_range = self.index.hit_range_by_slot(slot as usize, &minimizer);
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
-                    metrics.record_seed_lookup(
-                        hit_range.map(|(_, count)| count),
-                        frequency_threshold,
-                    );
+                    metrics
+                        .record_seed_lookup(hit_range.map(|(_, count)| count), frequency_threshold);
                 }
                 if let Some((offset, count)) = hit_range {
                     if count < frequency_threshold {
@@ -247,7 +245,7 @@ impl ReferenceSketch {
             reference_contig_id: candidate_region.reference_contig_id,
             query_fragment_id: query_fragment.id,
             query_fragment_length: query_fragment.length,
-            reference_start: (best_start + last_best_start) / 2,
+            reference_start: u32::midpoint(best_start, last_best_start),
             identity,
             query_minimizer_count: sketch_size,
             reference_minimizer_count: best_reference_minimizer_count,

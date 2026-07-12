@@ -35,7 +35,7 @@ pub(crate) struct ShardedBuildOptions<'a> {
     pub(crate) force_rebuild: bool,
 }
 
-/// One input reference genome file and the number of bases FastANI considers mappable.
+/// One input reference genome file and the number of bases `FastANI` considers mappable.
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct ReferenceFile {
     pub(crate) path: String,

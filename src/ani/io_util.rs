@@ -175,12 +175,15 @@ pub(crate) fn decompress_to_scratch(
 }
 
 pub(crate) fn slice_as_bytes<T>(slice: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, std::mem::size_of_val(slice)) }
+    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
 }
 
 pub(crate) fn slice_as_bytes_mut<T>(slice: &mut [T]) -> &mut [u8] {
     unsafe {
-        std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, std::mem::size_of_val(slice))
+        std::slice::from_raw_parts_mut(
+            slice.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(slice),
+        )
     }
 }
 
@@ -195,7 +198,7 @@ pub(crate) struct ScratchFile {
 
 impl ScratchFile {
     pub(crate) fn create(tmp_dir: Option<&Path>, purpose: &str) -> io::Result<(Self, fs::File)> {
-        let directory: PathBuf = tmp_dir.map(Path::to_path_buf).unwrap_or_else(env::temp_dir);
+        let directory: PathBuf = tmp_dir.map_or_else(env::temp_dir, Path::to_path_buf);
         fs::create_dir_all(&directory)?;
 
         for attempt in 0..100u32 {

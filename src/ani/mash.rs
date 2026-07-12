@@ -267,7 +267,10 @@ mod tests {
     #[test]
     fn mash_distance_lower_bound_handles_confidence_endpoints() {
         let distance = 0.1;
-        assert_eq!(mash_distance_lower_bound(distance, 1_000, 16, 0.0), distance);
+        assert_eq!(
+            mash_distance_lower_bound(distance, 1_000, 16, 0.0),
+            distance
+        );
 
         let full_confidence_bound = mash_distance_lower_bound(distance, 1_000, 16, 1.0);
         assert!(full_confidence_bound.is_finite());

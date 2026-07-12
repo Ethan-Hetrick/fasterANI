@@ -179,7 +179,7 @@ fn validate_fasta_file_path(
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             match list_path {
-                Some(_) => format!("Path in list is not a file: {}", original_path),
+                Some(_) => format!("Path in list is not a file: {original_path}"),
                 None => format!("{input_kind} path is not a file: {}", path.display()),
             },
         )),
@@ -187,8 +187,7 @@ fn validate_fasta_file_path(
             err.kind(),
             match list_path {
                 Some(list_path) => format!(
-                    "Cannot access path '{}' from list: {}\n{}",
-                    original_path, list_path, err
+                    "Cannot access path '{original_path}' from list: {list_path}\n{err}"
                 ),
                 None => format!(
                     "Cannot access {} file {}: {}",
@@ -412,7 +411,10 @@ impl RuntimeStartupOutput {
         if let Some(filter) = &args.shard_filter {
             let mut sorted: Vec<usize> = filter.iter().copied().collect();
             sorted.sort_unstable();
-            let rendered: Vec<String> = sorted.iter().map(|index| index.to_string()).collect();
+            let rendered: Vec<String> = sorted
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             entries.push(format!(
                 "shards = [{}]{}",
                 rendered.join(", "),
@@ -1006,13 +1008,12 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query requires a path")
                 })?;
-                if !is_stdin_path(&value)
-                    && stdin_query_name.is_some() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--query-name may only be used with `--query -`",
-                        ));
-                    }
+                if !is_stdin_path(&value) && stdin_query_name.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--query-name may only be used with `--query -`",
+                    ));
+                }
                 add_query_file(
                     &value,
                     ParameterSource::Cli,

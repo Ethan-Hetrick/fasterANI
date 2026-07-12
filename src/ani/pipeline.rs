@@ -180,9 +180,10 @@ fn aggregate_values(
     query_mapped_length: u64,
     fragment_length: u32,
 ) -> (f64, f64, f64) {
-    let total_fragment_equivalents: f64 = query_mapped_length as f64 / fragment_length as f64;
+    let total_fragment_equivalents: f64 = query_mapped_length as f64 / f64::from(fragment_length);
     let aligned_fraction: f64 = if total_fragment_equivalents > 0.0 {
-        let shared_fragment_equivalents: f64 = summary.shared_bases as f64 / fragment_length as f64;
+        let shared_fragment_equivalents: f64 =
+            summary.shared_bases as f64 / f64::from(fragment_length);
         shared_fragment_equivalents / total_fragment_equivalents
     } else {
         f64::NAN
@@ -298,8 +299,7 @@ fn write_mapping_stats(
         let query_contig: &str = query_file
             .contig_names
             .get(query_fragment.contig_id)
-            .map(String::as_str)
-            .unwrap_or("unknown");
+            .map_or("unknown", String::as_str);
 
         let reference_contig_opt: Option<&str> = reference_contig_names
             .and_then(|contigs| contigs.get(mapping.reference_contig_id))
@@ -307,8 +307,7 @@ fn write_mapping_stats(
 
         let reference_offset: u64 = reference_contig_names
             .and_then(|contigs| contigs.get(mapping.reference_contig_id))
-            .map(|contig| u64::from(contig.segment_start))
-            .unwrap_or(0);
+            .map_or(0, |contig| u64::from(contig.segment_start));
         let reference_start: u64 =
             reference_offset.saturating_add(u64::from(mapping.reference_start));
         let reference_end: u64 =
@@ -323,7 +322,7 @@ fn write_mapping_stats(
         )?;
 
         if let Some(name) = reference_contig_opt {
-            write!(output, "{}", name)?;
+            write!(output, "{name}")?;
         } else {
             write!(output, "{}", mapping.reference_contig_id)?;
         }
@@ -577,9 +576,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 args.min_fragment_length,
                 args.mash_threshold,
                 args.mash_confidence,
-                args.minmer_count
-                    .map(|count| count.to_string())
-                    .unwrap_or_else(|| "disabled".to_owned()),
+                args.minmer_count.map_or_else(|| "disabled".to_owned(), |count| count.to_string()),
                 args.freq_threshold_percent,
                 args.split_n_run,
             ),
@@ -688,12 +685,12 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                             "--shards specified unknown shard indices: {}; available: {}",
                             unknown
                                 .iter()
-                                .map(|index| index.to_string())
+                                .map(std::string::ToString::to_string)
                                 .collect::<Vec<_>>()
                                 .join(", "),
                             available
                                 .iter()
-                                .map(|index| index.to_string())
+                                .map(std::string::ToString::to_string)
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ),
@@ -701,7 +698,9 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 }
                 manifest
                     .shards
-                    .iter().filter(|&shard| filter.contains(&shard.shard_index)).cloned()
+                    .iter()
+                    .filter(|&shard| filter.contains(&shard.shard_index))
+                    .cloned()
                     .collect()
             }
             None => manifest.shards.clone(),
@@ -921,9 +920,9 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                     );
                 }
             }
-            loader_handle.join().map_err(|_| {
-                io::Error::other("shard loader thread panicked")
-            })?;
+            loader_handle
+                .join()
+                .map_err(|_| io::Error::other("shard loader thread panicked"))?;
 
             for (query_slot, preloaded_query) in preloaded_queries.iter().enumerate() {
                 let results: Vec<MappingResult> =
@@ -1149,9 +1148,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 args.threads,
                 args.freq_threshold_percent,
                 frequency_threshold_report,
-                args.minmer_count
-                    .map(|count| count.to_string())
-                    .unwrap_or_else(|| "disabled".to_owned()),
+                args.minmer_count.map_or_else(|| "disabled".to_owned(), |count| count.to_string()),
                 args.fragment_stride,
                 args.min_fragment_length,
                 args.split_n_run,
@@ -1194,10 +1191,11 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 .zip(mapping_detail_metrics.seed_hit_list_bin_hits.iter())
                 .enumerate()
             {
-                let upper_bound: String = SEED_HIT_HISTOGRAM_UPPER_BOUNDS
-                    .get(bin_index)
-                    .map(|upper_bound| upper_bound.to_string())
-                    .unwrap_or_else(|| SEED_HIT_HISTOGRAM_OVERFLOW_LABEL.to_owned());
+                let upper_bound: String =
+                    SEED_HIT_HISTOGRAM_UPPER_BOUNDS.get(bin_index).map_or_else(
+                        || SEED_HIT_HISTOGRAM_OVERFLOW_LABEL.to_owned(),
+                        std::string::ToString::to_string,
+                    );
                 eprintln!(
                     "SEED_HIT_BIN\tupper={upper_bound}\tseed_lookups={lookup_count}\tseed_hits={hit_sum}"
                 );
