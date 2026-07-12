@@ -11,4 +11,4 @@
 # `RUSTFLAGS="-C target-cpu=x86-64-v2"`) or enable the dependency's `scalar` feature.
 [build]
 rustflags = ["-C", "target-cpu=native"]
-format_strings = true
+

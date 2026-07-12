@@ -28,10 +28,25 @@ thiserror = "2"
 toml = "0.8"
 dhat = { version = "0.3", optional = true }
 
+[dev-dependencies]
+iai-callgrind = "0.8.0"
+cargo-show-asm = "0.2.62"
+criterion = "0.8.2"
+
 [features]
 dhat-heap = ["dep:dhat"]
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [profile.performance]
 inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+[profile.dev]
 debug = true
 debug-assertions = true
+overflow-checks = true
+strip = "none"
