@@ -664,10 +664,9 @@ impl ReferenceSketch {
             hit_payloads.extend_from_slice(hits);
 
             let keys_done: usize = key_index + 1;
-            if keys_done.is_multiple_of(SKETCH_KEY_PACK_PROGRESS_INTERVAL)
-                || keys_done == index.len()
-            {
-                if runtime_options.progress_enabled {
+            if (keys_done.is_multiple_of(SKETCH_KEY_PACK_PROGRESS_INTERVAL)
+                || keys_done == index.len())
+                && runtime_options.progress_enabled {
                     emit_progress(
                         "sketch_save",
                         &format!(
@@ -678,7 +677,6 @@ impl ReferenceSketch {
                         save_start,
                     );
                 }
-            }
         }
 
         let expected_reference_minimizer_bytes: u64 =

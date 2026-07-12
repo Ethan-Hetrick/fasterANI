@@ -701,9 +701,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 }
                 manifest
                     .shards
-                    .iter()
-                    .cloned()
-                    .filter(|shard| filter.contains(&shard.shard_index))
+                    .iter().filter(|&shard| filter.contains(&shard.shard_index)).cloned()
                     .collect()
             }
             None => manifest.shards.clone(),
@@ -924,7 +922,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 }
             }
             loader_handle.join().map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "shard loader thread panicked")
+                io::Error::other("shard loader thread panicked")
             })?;
 
             for (query_slot, preloaded_query) in preloaded_queries.iter().enumerate() {

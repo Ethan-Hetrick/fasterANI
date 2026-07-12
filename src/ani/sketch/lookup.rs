@@ -52,14 +52,14 @@ impl ReferenceSketch {
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
                     metrics.record_seed_lookup(
-                        hit_range.map(|(_, count)| count as usize),
+                        hit_range.map(|(_, count)| count),
                         frequency_threshold,
                     );
                 }
                 if let Some((offset, count)) = hit_range {
-                    if (count as usize) < frequency_threshold {
+                    if count < frequency_threshold {
                         hit_ranges.push((offset, count));
-                        accepted_hit_count = accepted_hit_count.saturating_add(count as usize);
+                        accepted_hit_count = accepted_hit_count.saturating_add(count);
                     }
                 }
             }

@@ -1006,14 +1006,13 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query requires a path")
                 })?;
-                if !is_stdin_path(&value) {
-                    if stdin_query_name.is_some() {
+                if !is_stdin_path(&value)
+                    && stdin_query_name.is_some() {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "--query-name may only be used with `--query -`",
                         ));
                     }
-                }
                 add_query_file(
                     &value,
                     ParameterSource::Cli,
