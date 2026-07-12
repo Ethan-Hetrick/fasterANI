@@ -1,6 +1,6 @@
 //! Reference-side data types: files, contigs, minimizers, indexes, and sketch metadata.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -425,13 +425,13 @@ impl ReferenceIndex {
         let mut threshold: usize = usize::MAX;
         for (frequency, count) in frequencies {
             sum += count;
-            if sum < minimizers_to_ignore {
-                threshold = frequency;
-            } else if sum == minimizers_to_ignore {
-                threshold = frequency;
-                break;
-            } else {
-                break;
+            match sum.cmp(&minimizers_to_ignore) {
+                Ordering::Less => threshold = frequency,
+                Ordering::Equal => {
+                    threshold = frequency;
+                    break;
+                }
+                Ordering::Greater => break,
             }
         }
 

@@ -398,15 +398,14 @@ impl RuntimeStartupOutput {
                 sources.max_shard_minimizers,
             );
         }
-        if sources.index_build_mode.is_some() && args.index_build_mode != IndexBuildMode::Auto {
-            push_toml_string(
-                &mut entries,
-                "index_build_mode",
-                Some(&StartupValue::new(
-                    args.index_build_mode.name(),
-                    sources.index_build_mode.expect("checked above"),
-                )),
-            );
+        if let Some(source) = sources.index_build_mode {
+            if args.index_build_mode != IndexBuildMode::Auto {
+                push_toml_string(
+                    &mut entries,
+                    "index_build_mode",
+                    Some(&StartupValue::new(args.index_build_mode.name(), source)),
+                );
+            }
         }
         if let Some(filter) = &args.shard_filter {
             let mut sorted: Vec<usize> = filter.iter().copied().collect();

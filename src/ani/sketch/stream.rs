@@ -25,6 +25,8 @@ use crate::ani::{
     SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
 };
 
+const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
+
 impl ReferenceSketch {
     /// Build a reference sketch cache while streaming contig minimizers through scratch files.
     #[allow(clippy::too_many_arguments)]
@@ -764,7 +766,6 @@ impl ReferenceSketch {
         let mut slot_keys: Vec<MinimizerKey> = vec![0; key_count];
         let mut hit_offsets: Vec<u32> = vec![0u32; key_count];
         let mut hit_counts: Vec<u32> = vec![0u32; key_count];
-        const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
         let mut grouped_chunk: Vec<GroupedKeyRecord> = Vec::with_capacity(GROUPED_KEY_PACK_CHUNK);
         let mut grouped_records_done: usize = 0usize;
         let mut partition_hit_offset: u64 = 0u64;
