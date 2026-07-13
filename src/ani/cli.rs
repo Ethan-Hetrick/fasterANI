@@ -145,7 +145,7 @@ Sketch database / sharding:
                                  Requires --reference-sketch.
   --index-build-mode <mode>    auto | hash | partitioned (default auto).
   --mphf-gamma <float>         MPHF size/build-time tradeoff for saved sketches
-                                 (must be > 1.01; default 1.7).
+                                 (must be > 1.01; default 10).
 
 Resources:
   --threads <n>                Worker threads, >= 1 (default 1).
