@@ -17,7 +17,7 @@ pub(crate) const DEFAULT_MIN_PERCENT_IDENTITY: f64 = 80.0;
 pub(crate) const DEFAULT_MASH_CONFIDENCE: f64 = 0.9;
 pub(crate) const DEFAULT_FREQ_THRESHOLD_PERCENT: f64 = 0.0;
 /// Default for `--mphf-gamma`: boomphf MPHF size/build-time tradeoff.
-pub(crate) const DEFAULT_MPHF_GAMMA: f64 = 10;
+pub(crate) const DEFAULT_MPHF_GAMMA: f64 = 10.0;
 /// Default for `--max-shard-minimizers`: per-shard reference minimizer budget.
 /// 500M targets roughly 10 GiB `.fasketch` shards for GTDB-like bacterial genomes
 /// using the observed storage model of about 21 bytes per reference minimizer.
