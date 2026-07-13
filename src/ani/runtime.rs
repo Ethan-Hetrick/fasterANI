@@ -4,15 +4,26 @@
 use std::{env, mem::size_of};
 use std::{fs, time::Instant};
 
-use crate::ani::CliArgs;
+use crate::ani::{CliArgs, DEFAULT_MPHF_GAMMA};
 #[cfg(debug_assertions)]
 use crate::ani::{MinimizerKey, ReferenceMinimizer, SeedHit};
 
 /// Runtime controls shared by long-running reference build and sketch operations.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(crate) struct RuntimeOptions {
     pub(crate) progress_enabled: bool,
     pub(crate) worker_threads: usize,
+    pub(crate) mphf_gamma: f64,
+}
+
+impl Default for RuntimeOptions {
+    fn default() -> Self {
+        Self {
+            progress_enabled: false,
+            worker_threads: 0,
+            mphf_gamma: DEFAULT_MPHF_GAMMA,
+        }
+    }
 }
 
 impl RuntimeOptions {

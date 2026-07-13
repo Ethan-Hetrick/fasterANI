@@ -10,11 +10,11 @@ use std::{
 use crate::ani::{
     is_stdin_path, legacy_sketch_path, load_params_file, manifest_path, validate_fragment_length,
     validate_kmer_size, validate_mash_confidence, validate_mash_threshold,
-    validate_max_shard_minimizers, validate_window_size, FastaInput, IndexBuildMode,
-    ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
+    validate_max_shard_minimizers, validate_mphf_gamma, validate_window_size, FastaInput,
+    IndexBuildMode, ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
     DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE,
     DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
-    DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    DEFAULT_MPHF_GAMMA, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
 };
 
 /// Parsed command-line arguments.
@@ -40,6 +40,7 @@ pub(crate) struct CliArgs {
     pub(crate) min_fragment_length: u32,
     pub(crate) mash_threshold: f64,
     pub(crate) mash_confidence: f64,
+    pub(crate) mphf_gamma: f64,
     /// Minimum run-length of ambiguous `N` bases that splits a contig; `0` disables.
     pub(crate) split_n_run: usize,
     pub(crate) max_shard_minimizers: usize,
@@ -143,6 +144,8 @@ Sketch database / sharding:
                                  e.g. 1,3,5-8. Queries all shards when omitted.
                                  Requires --reference-sketch.
   --index-build-mode <mode>    auto | hash | partitioned (default auto).
+  --mphf-gamma <float>         MPHF size/build-time tradeoff for saved sketches
+                                 (must be > 1.01; default 1.7).
 
 Resources:
   --threads <n>                Worker threads, >= 1 (default 1).
@@ -380,6 +383,14 @@ impl RuntimeStartupOutput {
                 sources.mash_confidence,
             );
         }
+        if sources.mphf_gamma.is_some() && args.mphf_gamma != DEFAULT_MPHF_GAMMA {
+            push_toml_number(
+                &mut entries,
+                "mphf_gamma",
+                args.mphf_gamma,
+                sources.mphf_gamma,
+            );
+        }
         if sources.split_n_run.is_some() && args.split_n_run != DEFAULT_SPLIT_N_RUN {
             push_toml_number(
                 &mut entries,
@@ -446,6 +457,7 @@ struct ParameterSources {
     min_fragment_length: Option<ParameterSource>,
     mash_threshold: Option<ParameterSource>,
     mash_confidence: Option<ParameterSource>,
+    mphf_gamma: Option<ParameterSource>,
     split_n_run: Option<ParameterSource>,
     max_shard_minimizers: Option<ParameterSource>,
     shards: Option<ParameterSource>,
@@ -800,6 +812,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut min_fragment_length_was_set: bool = false;
     let mut mash_threshold: f64 = DEFAULT_MIN_PERCENT_IDENTITY;
     let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
+    let mut mphf_gamma: f64 = DEFAULT_MPHF_GAMMA;
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
     let mut max_shard_minimizers: Option<usize> = None;
     let mut shard_filter: Option<HashSet<usize>> = None;
@@ -947,6 +960,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     if let Some(value) = params_file_config.mash_confidence {
         mash_confidence = value;
         sources.mash_confidence = Some(ParameterSource::ParamsFile);
+    }
+    if let Some(value) = params_file_config.mphf_gamma {
+        mphf_gamma = value;
+        sources.mphf_gamma = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.split_n_run {
         split_n_run = value;
@@ -1147,6 +1164,19 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
                 sources.mash_confidence = Some(ParameterSource::Cli);
                 validate_mash_confidence(mash_confidence)?;
+            }
+            "--mphf-gamma" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--mphf-gamma requires a value")
+                })?;
+                mphf_gamma = value.parse::<f64>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --mphf-gamma value {value:?}: {err}"),
+                    )
+                })?;
+                sources.mphf_gamma = Some(ParameterSource::Cli);
+                validate_mphf_gamma(mphf_gamma)?;
             }
             "--shards" => {
                 let value = args.next().ok_or_else(|| {
@@ -1460,6 +1490,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     validate_fragment_length(fragment_length)?;
     validate_mash_threshold(mash_threshold)?;
     validate_mash_confidence(mash_confidence)?;
+    validate_mphf_gamma(mphf_gamma)?;
     if fragment_stride == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1510,6 +1541,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         min_fragment_length,
         mash_threshold,
         mash_confidence,
+        mphf_gamma,
         split_n_run,
         max_shard_minimizers,
         shard_filter,

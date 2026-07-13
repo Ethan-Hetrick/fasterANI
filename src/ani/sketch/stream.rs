@@ -752,7 +752,7 @@ impl ReferenceSketch {
             );
         }
         let key_count: usize = keys.len();
-        let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
+        let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(runtime_options.mphf_gamma, &keys, None);
         drop(keys);
         if runtime_options.progress_enabled {
             emit_progress(

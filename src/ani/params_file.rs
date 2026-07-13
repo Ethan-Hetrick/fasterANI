@@ -17,6 +17,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) min_fragment_length: Option<u32>,
     pub(crate) mash_threshold: Option<f64>,
     pub(crate) mash_confidence: Option<f64>,
+    pub(crate) mphf_gamma: Option<f64>,
     pub(crate) split_n_run: Option<usize>,
     pub(crate) max_shard_minimizers: Option<usize>,
     pub(crate) shards: Option<String>,
@@ -100,6 +101,7 @@ mod tests {
 threads = 4
 mash_threshold = 82.5
 mash_confidence = 0.79
+mphf_gamma = 2.0
 reference_files = ["ref.fa"]
 "#,
         )
@@ -109,6 +111,7 @@ reference_files = ["ref.fa"]
         assert_eq!(config.threads, Some(4));
         assert_eq!(config.mash_threshold, Some(82.5));
         assert_eq!(config.mash_confidence, Some(0.79));
+        assert_eq!(config.mphf_gamma, Some(2.0));
         assert_eq!(config.reference_files, Some(vec!["ref.fa".to_owned()]));
 
         let _ = fs::remove_file(path);

@@ -58,9 +58,17 @@ pub(crate) fn validate_mash_confidence(mash_confidence: f64) -> Result<(), AniEr
     Ok(())
 }
 
+pub(crate) fn validate_mphf_gamma(mphf_gamma: f64) -> Result<(), AniError> {
+    if !mphf_gamma.is_finite() || mphf_gamma <= 1.01 {
+        return Err(AniError::MphfGammaOutOfRange);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_mash_confidence;
+    use super::{validate_mash_confidence, validate_mphf_gamma};
 
     #[test]
     fn mash_confidence_accepts_closed_unit_interval() {
@@ -73,5 +81,18 @@ mod tests {
         assert!(validate_mash_confidence(-0.1).is_err());
         assert!(validate_mash_confidence(1.1).is_err());
         assert!(validate_mash_confidence(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn mphf_gamma_accepts_values_above_boomphf_minimum() {
+        validate_mphf_gamma(1.7).expect("default gamma should be valid");
+    }
+
+    #[test]
+    fn mphf_gamma_rejects_invalid_values() {
+        assert!(validate_mphf_gamma(1.01).is_err());
+        assert!(validate_mphf_gamma(1.0).is_err());
+        assert!(validate_mphf_gamma(f64::NAN).is_err());
+        assert!(validate_mphf_gamma(f64::INFINITY).is_err());
     }
 }

@@ -553,6 +553,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
     let runtime_options: RuntimeOptions = RuntimeOptions {
         progress_enabled,
         worker_threads: args.threads,
+        mphf_gamma: args.mphf_gamma,
     };
     if !fastani_compatible_fragment_mode(
         args.fragment_length,
@@ -568,7 +569,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
         emit_progress(
             "parameters",
             &format!(
-                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmash_threshold={:.6}\tmash_confidence={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
+                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmash_threshold={:.6}\tmash_confidence={:.6}\tmphf_gamma={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
                 args.kmer_size,
                 args.window_size,
                 args.fragment_length,
@@ -576,6 +577,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 args.min_fragment_length,
                 args.mash_threshold,
                 args.mash_confidence,
+                args.mphf_gamma,
                 args.minmer_count.map_or_else(|| "disabled".to_owned(), |count| count.to_string()),
                 args.freq_threshold_percent,
                 args.split_n_run,

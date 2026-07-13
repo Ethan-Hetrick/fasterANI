@@ -78,7 +78,7 @@ impl ReferenceSketch {
                 save_start,
             );
         }
-        let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
+        let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(runtime_options.mphf_gamma, &keys, None);
         if runtime_options.progress_enabled {
             emit_progress(
                 "sketch_save",
@@ -629,7 +629,7 @@ impl ReferenceSketch {
             );
         }
         let keys: Vec<MinimizerKey> = index.keys().copied().collect::<Vec<_>>();
-        let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(1.7, &keys, None);
+        let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(runtime_options.mphf_gamma, &keys, None);
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
         let mut hit_offsets: Vec<u32> = vec![0u32; keys.len()];
         let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];

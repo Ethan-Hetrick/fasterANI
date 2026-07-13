@@ -22,6 +22,8 @@ pub(crate) enum AniError {
     MashThresholdOutOfRange,
     #[error("--mash-confidence must be a finite value between 0 and 1")]
     MashConfidenceOutOfRange,
+    #[error("--mphf-gamma must be a finite value greater than 1.01")]
+    MphfGammaOutOfRange,
 }
 
 impl From<AniError> for io::Error {
