@@ -569,9 +569,10 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
         emit_progress(
             "parameters",
             &format!(
-                "event=algorithm\tkmer_size={}\twindow_size={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmash_threshold={:.6}\tmash_confidence={:.6}\tmphf_gamma={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
+                "event=algorithm\tkmer_size={}\twindow_size={}\tminimizer_hash_seed={}\tfragment_length={}\tfragment_stride={}\tmin_fragment_length={}\tmash_threshold={:.6}\tmash_confidence={:.6}\tmphf_gamma={:.6}\tminmer_count={}\tfreq_threshold_percent={:.6}\tsplit_n_run={}",
                 args.kmer_size,
                 args.window_size,
+                args.minimizer_hash_seed,
                 args.fragment_length,
                 args.fragment_stride,
                 args.min_fragment_length,
@@ -598,6 +599,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
         SketchParams {
             kmer_size: args.kmer_size,
             window_size: args.window_size,
+            minimizer_hash_seed: args.minimizer_hash_seed,
             fragment_length: args.fragment_length,
             min_fragment_length: args.min_fragment_length,
             split_n_run: args.split_n_run,
@@ -740,6 +742,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 &mut reader_query,
                 args.kmer_size,
                 args.window_size,
+                args.minimizer_hash_seed,
                 args.minmer_count,
                 args.fragment_length,
                 args.fragment_stride,
@@ -819,6 +822,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
             let loader_params = SketchParams {
                 kmer_size: args.kmer_size,
                 window_size: args.window_size,
+                minimizer_hash_seed: args.minimizer_hash_seed,
                 fragment_length: args.fragment_length,
                 min_fragment_length: args.min_fragment_length,
                 split_n_run: args.split_n_run,
@@ -991,6 +995,7 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
                 &mut reader_query,
                 args.kmer_size,
                 args.window_size,
+                args.minimizer_hash_seed,
                 args.minmer_count,
                 args.fragment_length,
                 args.fragment_stride,

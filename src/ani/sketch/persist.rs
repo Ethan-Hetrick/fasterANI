@@ -396,6 +396,7 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed: _,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -603,6 +604,7 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed: _,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -840,7 +842,7 @@ mod tests {
         contig_sidecar_path, ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile,
         ReferenceHitMap, ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions,
         SeedHit, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
-        DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
+        DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
 
@@ -921,6 +923,7 @@ mod tests {
             SketchParams {
                 kmer_size: DEFAULT_KMER_SIZE,
                 window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
                 fragment_length: DEFAULT_FRAGMENT_LENGTH,
                 min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
                 split_n_run: 0,

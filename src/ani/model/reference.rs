@@ -19,6 +19,7 @@ use crate::ani::{
 pub(crate) struct SketchParams {
     pub(crate) kmer_size: usize,
     pub(crate) window_size: usize,
+    pub(crate) minimizer_hash_seed: u32,
     pub(crate) fragment_length: u32,
     pub(crate) min_fragment_length: u32,
     pub(crate) split_n_run: usize,

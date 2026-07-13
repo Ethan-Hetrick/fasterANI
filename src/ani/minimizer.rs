@@ -6,7 +6,7 @@ use seq_hash::NtHasher;
 use simd_minimizers::canonical_minimizers;
 use simd_minimizers::packed_seq::{PackedNSeqVec, Seq};
 
-use crate::ani::{MinimizerKey, ReferenceMinimizer, MINIMIZER_HASH_SEED};
+use crate::ani::{MinimizerKey, ReferenceMinimizer};
 
 /// Sliding minimizer set used while scoring candidate reference windows.
 #[derive(Default)]
@@ -261,6 +261,7 @@ pub(crate) fn canonical_minimizer_observation(
     sequence: &[u8],
     kmer_size: usize,
     window_size: usize,
+    minimizer_hash_seed: u32,
 ) -> MinimizerObservation {
     if sequence.len() < kmer_size + window_size.saturating_sub(1) || is_all_n_sequence(sequence) {
         return MinimizerObservation {
@@ -271,7 +272,7 @@ pub(crate) fn canonical_minimizer_observation(
     let packed_sequence: PackedNSeqVec = PackedNSeqVec::from_ascii(sequence);
     let packed_sequence_slice = packed_sequence.as_slice();
     let sequence_slice = packed_sequence_slice.seq;
-    let hasher: NtHasher<true> = NtHasher::<true>::new_with_seed(kmer_size, MINIMIZER_HASH_SEED);
+    let hasher: NtHasher<true> = NtHasher::<true>::new_with_seed(kmer_size, minimizer_hash_seed);
     let mut minimizer_positions: Vec<u32> = Vec::new();
     let minimizer_builder = canonical_minimizers(kmer_size, window_size).hasher(&hasher);
     let _ = minimizer_builder
@@ -306,8 +307,10 @@ pub(crate) fn canonical_minimizers_with_positions(
     sequence: &[u8],
     kmer_size: usize,
     window_size: usize,
+    minimizer_hash_seed: u32,
 ) -> Vec<(MinimizerKey, u32)> {
-    canonical_minimizer_observation(sequence, kmer_size, window_size).minimizers_with_positions
+    canonical_minimizer_observation(sequence, kmer_size, window_size, minimizer_hash_seed)
+        .minimizers_with_positions
 }
 
 fn is_all_n_sequence(sequence: &[u8]) -> bool {
@@ -338,10 +341,15 @@ pub(crate) fn query_fragment_sketch(
     fragment_sequence: &[u8],
     kmer_size: usize,
     window_size: usize,
+    minimizer_hash_seed: u32,
     minmer_count: Option<usize>,
 ) -> QueryFragmentSketch {
-    let observation: MinimizerObservation =
-        canonical_minimizer_observation(fragment_sequence, kmer_size, window_size);
+    let observation: MinimizerObservation = canonical_minimizer_observation(
+        fragment_sequence,
+        kmer_size,
+        window_size,
+        minimizer_hash_seed,
+    );
     let mut minimizers: Vec<MinimizerKey> = observation
         .minimizers_with_positions
         .into_iter()
@@ -490,7 +498,7 @@ mod tests {
         mapped_length_from_fragment_ranges, query_fragment_ranges, repeated_acgt,
         select_seed_minimizers, split_sequence_ranges, usable_minimizer_window_count, FastaInput,
         MinimizerKey, MinimizerObservation, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
-        DEFAULT_MIN_FRAGMENT_LENGTH,
+        DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
 
@@ -523,8 +531,12 @@ mod tests {
         let kmer_size: usize = 10usize;
         let window_size: usize = 16usize;
 
-        let minimizers: Vec<(MinimizerKey, u32)> =
-            canonical_minimizers_with_positions(sequence, kmer_size, window_size);
+        let minimizers: Vec<(MinimizerKey, u32)> = canonical_minimizers_with_positions(
+            sequence,
+            kmer_size,
+            window_size,
+            DEFAULT_MINIMIZER_HASH_SEED,
+        );
 
         assert!(!minimizers.is_empty());
         for (_hash, position) in minimizers {
@@ -540,8 +552,12 @@ mod tests {
         let kmer_size: usize = 10usize;
         let window_size: usize = 16usize;
 
-        let minimizers: Vec<(MinimizerKey, u32)> =
-            canonical_minimizers_with_positions(sequence, kmer_size, window_size);
+        let minimizers: Vec<(MinimizerKey, u32)> = canonical_minimizers_with_positions(
+            sequence,
+            kmer_size,
+            window_size,
+            DEFAULT_MINIMIZER_HASH_SEED,
+        );
 
         assert!(minimizers.is_empty());
     }
@@ -577,7 +593,8 @@ mod tests {
     #[test]
     fn all_ambiguous_observation_keeps_expected_window_count() {
         let sequence: &[u8] = b"NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN";
-        let observation: MinimizerObservation = canonical_minimizer_observation(sequence, 10, 16);
+        let observation: MinimizerObservation =
+            canonical_minimizer_observation(sequence, 10, 16, DEFAULT_MINIMIZER_HASH_SEED);
 
         assert_eq!(usable_minimizer_window_count(sequence, 10, 16), 0);
         assert_eq!(expected_minimizer_window_count(sequence.len(), 10, 16), 16);

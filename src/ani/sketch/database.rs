@@ -97,6 +97,7 @@ impl SketchDatabase {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed: _,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -328,6 +329,7 @@ impl SketchDatabase {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed: _,
             fragment_length,
             min_fragment_length,
             split_n_run,

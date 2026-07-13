@@ -31,6 +31,7 @@ impl QueryFile {
         reader: &mut fasta::io::Reader<impl io::BufRead>,
         kmer_size: usize,
         window_size: usize,
+        minimizer_hash_seed: u32,
         minmer_count: Option<usize>,
         fragment_length: u32,
         fragment_stride: u32,
@@ -73,6 +74,7 @@ impl QueryFile {
                         &segment_sequence[fragment_range.clone()],
                         kmer_size,
                         window_size,
+                        minimizer_hash_seed,
                         minmer_count,
                     );
                     if fragment_sketch.minimizers.is_empty() {

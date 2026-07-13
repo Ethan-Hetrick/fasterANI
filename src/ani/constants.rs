@@ -6,7 +6,7 @@ use crate::ani::SeedHit;
 
 pub(crate) const DEFAULT_KMER_SIZE: usize = 16;
 pub(crate) const DEFAULT_WINDOW_SIZE: usize = 24;
-pub(crate) const MINIMIZER_HASH_SEED: u32 = 42;
+pub(crate) const DEFAULT_MINIMIZER_HASH_SEED: u32 = 42;
 pub(crate) const DEFAULT_FRAGMENT_LENGTH: u32 = 3000;
 pub(crate) const DEFAULT_FRAGMENT_STRIDE: u32 = DEFAULT_FRAGMENT_LENGTH;
 pub(crate) const DEFAULT_MIN_FRAGMENT_LENGTH: u32 = DEFAULT_FRAGMENT_LENGTH;

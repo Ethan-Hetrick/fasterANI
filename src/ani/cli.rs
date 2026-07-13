@@ -13,8 +13,8 @@ use crate::ani::{
     validate_max_shard_minimizers, validate_mphf_gamma, validate_window_size, FastaInput,
     IndexBuildMode, ParamsFileConfig, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
     DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE,
-    DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
-    DEFAULT_MPHF_GAMMA, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+    DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
+    DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_MPHF_GAMMA, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
 };
 
 /// Parsed command-line arguments.
@@ -35,6 +35,7 @@ pub(crate) struct CliArgs {
     pub(crate) minmer_count: Option<usize>,
     pub(crate) kmer_size: usize,
     pub(crate) window_size: usize,
+    pub(crate) minimizer_hash_seed: u32,
     pub(crate) fragment_length: u32,
     pub(crate) fragment_stride: u32,
     pub(crate) min_fragment_length: u32,
@@ -805,6 +806,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut minmer_count: Option<usize> = None;
     let mut kmer_size: usize = DEFAULT_KMER_SIZE;
     let mut window_size: usize = DEFAULT_WINDOW_SIZE;
+    let mut minimizer_hash_seed: u32 = DEFAULT_MINIMIZER_HASH_SEED;
     let mut fragment_length: u32 = DEFAULT_FRAGMENT_LENGTH;
     let mut fragment_stride: u32 = DEFAULT_FRAGMENT_STRIDE;
     let mut fragment_stride_was_set: bool = false;
@@ -1116,6 +1118,20 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 })?;
                 sources.window_size = Some(ParameterSource::Cli);
                 validate_window_size(window_size)?;
+            }
+            "--minimizer-hash-seed" => {
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--minimizer-hash-seed requires a value",
+                    )
+                })?;
+                minimizer_hash_seed = value.parse::<u32>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --minimizer-hash-seed value {value:?}: {err}"),
+                    )
+                })?;
             }
             "--fragment-length" => {
                 let value = args.next().ok_or_else(|| {
@@ -1536,6 +1552,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         minmer_count,
         kmer_size,
         window_size,
+        minimizer_hash_seed,
         fragment_length,
         fragment_stride,
         min_fragment_length,

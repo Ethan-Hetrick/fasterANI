@@ -76,6 +76,7 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -156,6 +157,7 @@ impl ReferenceSketch {
                             segment_sequence,
                             kmer_size,
                             window_size,
+                            minimizer_hash_seed,
                         ) {
                             reference_minimizers.push(ReferenceMinimizer { hash, position });
                         }
@@ -282,6 +284,7 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -370,6 +373,7 @@ impl ReferenceSketch {
                             segment_sequence,
                             kmer_size,
                             window_size,
+                            minimizer_hash_seed,
                         ) {
                             reference_minimizers.push(ReferenceMinimizer { hash, position });
                         }
@@ -657,6 +661,7 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
+            minimizer_hash_seed: _,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -982,7 +987,8 @@ mod tests {
     use crate::ani::{
         contig_sidecar_path, FastaInput, IndexBuildMode, ReferenceMinimizer, ReferenceSketch,
         RuntimeOptions, SketchBuildStats, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
-        DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+        DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN,
+        DEFAULT_WINDOW_SIZE,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
 
@@ -1019,6 +1025,7 @@ mod tests {
             SketchParams {
                 kmer_size: DEFAULT_KMER_SIZE,
                 window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
                 fragment_length: DEFAULT_FRAGMENT_LENGTH,
                 min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
                 split_n_run: DEFAULT_SPLIT_N_RUN,
@@ -1035,6 +1042,7 @@ mod tests {
             SketchParams {
                 kmer_size: DEFAULT_KMER_SIZE,
                 window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
                 fragment_length: DEFAULT_FRAGMENT_LENGTH,
                 min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
                 split_n_run: DEFAULT_SPLIT_N_RUN,
@@ -1051,6 +1059,7 @@ mod tests {
             SketchParams {
                 kmer_size: DEFAULT_KMER_SIZE,
                 window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
                 fragment_length: DEFAULT_FRAGMENT_LENGTH,
                 min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
                 split_n_run: DEFAULT_SPLIT_N_RUN,
@@ -1064,6 +1073,7 @@ mod tests {
             SketchParams {
                 kmer_size: DEFAULT_KMER_SIZE,
                 window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
                 fragment_length: DEFAULT_FRAGMENT_LENGTH,
                 min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
                 split_n_run: DEFAULT_SPLIT_N_RUN,
