@@ -12,6 +12,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) minmer_count: Option<usize>,
     pub(crate) kmer_size: Option<usize>,
     pub(crate) window_size: Option<usize>,
+    pub(crate) minimizer_hash_seed: Option<u32>,
     pub(crate) fragment_length: Option<u32>,
     pub(crate) fragment_stride: Option<u32>,
     pub(crate) min_fragment_length: Option<u32>,
@@ -24,6 +25,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) index_build_mode: Option<String>,
     pub(crate) bgzip: Option<bool>,
     pub(crate) header: Option<bool>,
+    pub(crate) per_contig: Option<bool>,
     pub(crate) verbose: Option<bool>,
     pub(crate) quiet: Option<bool>,
     pub(crate) force: Option<bool>,
@@ -102,6 +104,7 @@ threads = 4
 mash_threshold = 82.5
 mash_confidence = 0.79
 mphf_gamma = 2.0
+minimizer_hash_seed = 7
 reference_files = ["ref.fa"]
 "#,
         )
@@ -112,6 +115,7 @@ reference_files = ["ref.fa"]
         assert_eq!(config.mash_threshold, Some(82.5));
         assert_eq!(config.mash_confidence, Some(0.79));
         assert_eq!(config.mphf_gamma, Some(2.0));
+        assert_eq!(config.minimizer_hash_seed, Some(7));
         assert_eq!(config.reference_files, Some(vec!["ref.fa".to_owned()]));
 
         let _ = fs::remove_file(path);

@@ -1,8 +1,6 @@
 //! Seed-hit candidate discovery and sliding-window ANI scoring per query/reference pair.
 
-#[cfg(debug_assertions)]
-use std::mem::size_of;
-use std::{cmp::Ordering, collections::HashSet, io, time::Instant};
+use std::{cmp::Ordering, collections::HashSet, io, mem::size_of, time::Instant};
 
 use noodles::fasta;
 use rayon::prelude::*;
@@ -11,11 +9,45 @@ use crate::ani::{
     binomial_survival, estimate_relaxed_minimum_shared_minimizers, query_fragment_ranges,
     query_fragment_sketch, split_sequence_ranges, t_cdf_approx, AniComputation,
     AniDistributionStats, AniSummary, ContigAniSummary, MappingMetrics, MappingOutput,
-    MappingResult, MappingResultKey, MappingScratch, QueryFile, QueryFragment, QueryFragmentSketch,
-    ReferenceMinimizer, ReferenceSketch,
+    MappingResult, MappingResultKey, MappingScratch, MinimizerKey, QueryFile, QueryFragment,
+    QueryFragmentSketch, ReferenceMinimizer, ReferenceSketch,
 };
-#[cfg(debug_assertions)]
-use crate::ani::{MinimizerKey, QueryMemoryEstimate};
+
+/// Run-scoped executor reused by every query/reference mapping operation.
+pub(crate) struct MappingExecutor {
+    pool: Option<rayon::ThreadPool>,
+}
+
+impl MappingExecutor {
+    pub(crate) fn new(threads: usize) -> io::Result<Self> {
+        if threads <= 1 {
+            return Ok(Self { pool: None });
+        }
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("failed to initialize mapping thread pool: {err}"),
+                )
+            })?;
+
+        Ok(Self { pool: Some(pool) })
+    }
+}
+
+fn checked_query_coordinate(value: usize, field: &str, contig_name: &str) -> io::Result<u32> {
+    u32::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "query contig '{contig_name}' {field} coordinate {value} exceeds the u32 limit"
+            ),
+        )
+    })
+}
 
 pub(crate) fn lower_bound_minimizer_position(
     minimizers: &[ReferenceMinimizer],
@@ -81,9 +113,22 @@ impl QueryFile {
                         continue;
                     }
 
-                    let fragment_length: u32 = fragment_range.len() as u32;
-                    let query_start: u32 = (segment_start + fragment_range.start) as u32;
-                    let query_end: u32 = (segment_start + fragment_range.end) as u32;
+                    let contig_name: &str = &contig_names[contig_id];
+                    let fragment_length: u32 = checked_query_coordinate(
+                        fragment_range.len(),
+                        "fragment length",
+                        contig_name,
+                    )?;
+                    let query_start: u32 = checked_query_coordinate(
+                        segment_start + fragment_range.start,
+                        "fragment start",
+                        contig_name,
+                    )?;
+                    let query_end: u32 = checked_query_coordinate(
+                        segment_start + fragment_range.end,
+                        "fragment end",
+                        contig_name,
+                    )?;
                     mapped_length += u64::from(fragment_length);
                     fragments.push(QueryFragment {
                         id: fragments.len(),
@@ -130,21 +175,42 @@ impl QueryFile {
             .sum()
     }
 
-    #[cfg(debug_assertions)]
-    pub(crate) fn memory_estimate(&self) -> QueryMemoryEstimate {
-        QueryMemoryEstimate {
-            fragment_struct_bytes: self.fragments.capacity() * size_of::<QueryFragment>(),
-            query_minimizer_vec_bytes: self
-                .fragments
-                .iter()
-                .map(|fragment| fragment.minimizers.capacity() * size_of::<MinimizerKey>())
-                .sum(),
-            seed_minimizer_vec_bytes: self
-                .fragments
-                .iter()
-                .map(|fragment| fragment.seed_minimizers.capacity() * size_of::<MinimizerKey>())
-                .sum(),
-        }
+    pub(crate) fn estimated_owned_bytes(&self) -> usize {
+        let fragment_struct_bytes: usize = self
+            .fragments
+            .capacity()
+            .saturating_mul(size_of::<QueryFragment>());
+        let query_minimizer_vec_bytes: usize =
+            self.fragments.iter().fold(0usize, |total, fragment| {
+                total.saturating_add(
+                    fragment
+                        .minimizers
+                        .capacity()
+                        .saturating_mul(size_of::<MinimizerKey>()),
+                )
+            });
+        let seed_minimizer_vec_bytes: usize =
+            self.fragments.iter().fold(0usize, |total, fragment| {
+                total.saturating_add(
+                    fragment
+                        .seed_minimizers
+                        .capacity()
+                        .saturating_mul(size_of::<MinimizerKey>()),
+                )
+            });
+        let contig_name_bytes: usize = self
+            .contig_names
+            .capacity()
+            .saturating_mul(size_of::<String>())
+            .saturating_add(
+                self.contig_names
+                    .iter()
+                    .fold(0usize, |total, name| total.saturating_add(name.capacity())),
+            );
+        fragment_struct_bytes
+            .saturating_add(query_minimizer_vec_bytes)
+            .saturating_add(seed_minimizer_vec_bytes)
+            .saturating_add(contig_name_bytes)
     }
 }
 
@@ -186,88 +252,116 @@ fn map_query_to_reference(
     }
 }
 
-/// Map all query fragments to the reference sketch using a local Rayon thread pool.
+/// Map one query using the Rayon pool that is already active on the current thread.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn map_query_to_reference_parallel(
+fn map_query_to_reference_in_current_pool(
     reference_sketch: &ReferenceSketch,
     query_file: &QueryFile,
     kmer_size: usize,
     window_size: usize,
     min_identity: f64,
     mash_confidence: f64,
-    threads: usize,
     frequency_threshold: usize,
     collect_metrics: bool,
-) -> io::Result<MappingOutput> {
-    if threads <= 1 {
-        return Ok(map_query_to_reference(
-            reference_sketch,
-            query_file,
-            kmer_size,
-            window_size,
-            min_identity,
-            mash_confidence,
-            frequency_threshold,
-            collect_metrics,
-        ));
-    }
+) -> MappingOutput {
+    query_file
+        .fragments
+        .par_iter()
+        .fold(
+            || {
+                (
+                    MappingScratch::default(),
+                    Vec::new(),
+                    MappingMetrics::default(),
+                )
+            },
+            |(mut scratch, mut mapping_results, mut mapping_metrics), query_fragment| {
+                map_query_fragment_into(
+                    reference_sketch,
+                    query_fragment,
+                    kmer_size,
+                    window_size,
+                    min_identity,
+                    mash_confidence,
+                    frequency_threshold,
+                    &mut scratch,
+                    &mut mapping_results,
+                    &mut mapping_metrics,
+                    collect_metrics,
+                );
+                (scratch, mapping_results, mapping_metrics)
+            },
+        )
+        .map(
+            |(_scratch, mapping_results, mapping_metrics)| MappingOutput {
+                results: mapping_results,
+                metrics: mapping_metrics,
+            },
+        )
+        .reduce(
+            || MappingOutput {
+                results: Vec::new(),
+                metrics: MappingMetrics::default(),
+            },
+            |mut left, mut right| {
+                left.results.append(&mut right.results);
+                left.metrics.merge(right.metrics);
+                left
+            },
+        )
+}
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("failed to initialize rayon thread pool: {err}"),
-            )
-        })?;
+/// Map a bounded batch of queries in one executor installation.
+///
+/// The outer parallel iterator lets small queries occupy workers together, while the nested
+/// fragment iterator still spreads a single large query across the same run-scoped pool. Rayon
+/// preserves the input query order in the collected result vector.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn map_query_batch_to_reference_parallel(
+    executor: &MappingExecutor,
+    reference_sketch: &ReferenceSketch,
+    query_files: &[&QueryFile],
+    kmer_size: usize,
+    window_size: usize,
+    min_identity: f64,
+    mash_confidence: f64,
+    frequency_threshold: usize,
+    collect_metrics: bool,
+) -> io::Result<Vec<MappingOutput>> {
+    let Some(pool) = executor.pool.as_ref() else {
+        return Ok(query_files
+            .iter()
+            .map(|query_file| {
+                map_query_to_reference(
+                    reference_sketch,
+                    query_file,
+                    kmer_size,
+                    window_size,
+                    min_identity,
+                    mash_confidence,
+                    frequency_threshold,
+                    collect_metrics,
+                )
+            })
+            .collect());
+    };
 
     Ok(pool.install(|| {
-        query_file
-            .fragments
+        query_files
             .par_iter()
-            .fold(
-                || {
-                    (
-                        MappingScratch::default(),
-                        Vec::new(),
-                        MappingMetrics::default(),
-                    )
-                },
-                |(mut scratch, mut mapping_results, mut mapping_metrics), query_fragment| {
-                    map_query_fragment_into(
-                        reference_sketch,
-                        query_fragment,
-                        kmer_size,
-                        window_size,
-                        min_identity,
-                        mash_confidence,
-                        frequency_threshold,
-                        &mut scratch,
-                        &mut mapping_results,
-                        &mut mapping_metrics,
-                        collect_metrics,
-                    );
-                    (scratch, mapping_results, mapping_metrics)
-                },
-            )
-            .map(
-                |(_scratch, mapping_results, mapping_metrics)| MappingOutput {
-                    results: mapping_results,
-                    metrics: mapping_metrics,
-                },
-            )
-            .reduce(
-                || MappingOutput {
-                    results: Vec::new(),
-                    metrics: MappingMetrics::default(),
-                },
-                |mut left, mut right| {
-                    left.results.append(&mut right.results);
-                    left.metrics.merge(right.metrics);
-                    left
-                },
-            )
+            .map(|query_file| {
+                map_query_to_reference_in_current_pool(
+                    reference_sketch,
+                    query_file,
+                    kmer_size,
+                    window_size,
+                    min_identity,
+                    mash_confidence,
+                    frequency_threshold,
+                    collect_metrics,
+                )
+            })
+            .collect()
     }))
 }
 
@@ -376,12 +470,10 @@ fn map_query_fragment_into(
 }
 
 /// Collapse raw fragment mappings into final per-reference-file ANI summaries.
-pub(crate) fn final_ani_computation(
+pub(crate) fn compact_reciprocal_best_mappings(
     mut mapping_results: Vec<MappingResult>,
-    query_file: &QueryFile,
-    reference_file_count: usize,
     fragment_length: u32,
-) -> AniComputation {
+) -> Vec<MappingResult> {
     mapping_results.sort_by(compare_query_bucket);
 
     let mut query_best_mappings: Vec<MappingResult> = Vec::new();
@@ -418,6 +510,18 @@ pub(crate) fn final_ani_computation(
 
         summary_mappings.push(mapping);
     }
+
+    summary_mappings
+}
+
+/// Collapse raw fragment mappings into final per-reference-file ANI summaries.
+pub(crate) fn final_ani_computation(
+    mapping_results: Vec<MappingResult>,
+    query_file: &QueryFile,
+    reference_file_count: usize,
+    fragment_length: u32,
+) -> AniComputation {
+    let summary_mappings = compact_reciprocal_best_mappings(mapping_results, fragment_length);
 
     let mut summaries: Vec<AniSummary> = (0..reference_file_count)
         .map(|_| AniSummary::default())
@@ -495,20 +599,21 @@ pub(crate) fn final_ani_computation(
 }
 
 fn compare_query_bucket(left: &MappingResult, right: &MappingResult) -> Ordering {
-    (
-        left.reference_file_id,
-        left.query_fragment_id,
-        ordered_float(left.identity),
-        left.reference_contig_id,
-        left.reference_start,
-    )
-        .cmp(&(
-            right.reference_file_id,
-            right.query_fragment_id,
-            ordered_float(right.identity),
-            right.reference_contig_id,
-            right.reference_start,
-        ))
+    left.reference_file_id
+        .cmp(&right.reference_file_id)
+        .then_with(|| left.query_fragment_id.cmp(&right.query_fragment_id))
+        .then_with(|| left.identity.total_cmp(&right.identity))
+        .then_with(|| left.reference_contig_id.cmp(&right.reference_contig_id))
+        .then_with(|| left.reference_start.cmp(&right.reference_start))
+        .then_with(|| left.query_fragment_length.cmp(&right.query_fragment_length))
+        .then_with(|| left.query_minimizer_count.cmp(&right.query_minimizer_count))
+        .then_with(|| {
+            left.reference_minimizer_count
+                .cmp(&right.reference_minimizer_count)
+        })
+        .then_with(|| left.shared_minimizers.cmp(&right.shared_minimizers))
+        .then_with(|| left.union_minimizers.cmp(&right.union_minimizers))
+        .then_with(|| left.jaccard.total_cmp(&right.jaccard))
 }
 
 fn compare_refbin_bucket(
@@ -516,20 +621,26 @@ fn compare_refbin_bucket(
     right: &MappingResult,
     fragment_length: u32,
 ) -> Ordering {
-    (
-        left.reference_contig_id,
-        reference_position_bin(left.reference_start, fragment_length),
-        ordered_float(left.identity),
-    )
-        .cmp(&(
-            right.reference_contig_id,
-            reference_position_bin(right.reference_start, fragment_length),
-            ordered_float(right.identity),
-        ))
-}
-
-fn ordered_float(value: f64) -> u64 {
-    value.to_bits()
+    left.reference_contig_id
+        .cmp(&right.reference_contig_id)
+        .then_with(|| {
+            reference_position_bin(left.reference_start, fragment_length).cmp(
+                &reference_position_bin(right.reference_start, fragment_length),
+            )
+        })
+        .then_with(|| left.identity.total_cmp(&right.identity))
+        .then_with(|| left.reference_file_id.cmp(&right.reference_file_id))
+        .then_with(|| left.query_fragment_id.cmp(&right.query_fragment_id))
+        .then_with(|| left.reference_start.cmp(&right.reference_start))
+        .then_with(|| left.query_fragment_length.cmp(&right.query_fragment_length))
+        .then_with(|| left.query_minimizer_count.cmp(&right.query_minimizer_count))
+        .then_with(|| {
+            left.reference_minimizer_count
+                .cmp(&right.reference_minimizer_count)
+        })
+        .then_with(|| left.shared_minimizers.cmp(&right.shared_minimizers))
+        .then_with(|| left.union_minimizers.cmp(&right.union_minimizers))
+        .then_with(|| left.jaccard.total_cmp(&right.jaccard))
 }
 
 fn reference_position_bin(position: u32, fragment_length: u32) -> u32 {
@@ -677,13 +788,152 @@ fn t_critical_95(degrees_of_freedom: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_distribution_stats;
+    use super::{
+        checked_query_coordinate, compact_reciprocal_best_mappings, compute_distribution_stats,
+        final_ani_computation,
+    };
+    use crate::ani::{AniSummary, MappingResult, QueryFile, QueryFragment};
+    use std::io;
 
     fn assert_close(actual: f64, expected: f64) {
         assert!(
             (actual - expected).abs() < 1e-12,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn mapping(
+        reference_file_id: usize,
+        reference_contig_id: usize,
+        query_fragment_id: usize,
+        reference_start: u32,
+        identity: f64,
+    ) -> MappingResult {
+        MappingResult {
+            reference_file_id,
+            reference_contig_id,
+            query_fragment_id,
+            query_fragment_length: 100,
+            reference_start,
+            identity,
+            query_minimizer_count: 10,
+            reference_minimizer_count: 11,
+            shared_minimizers: 9,
+            union_minimizers: 12,
+            jaccard: 0.75,
+        }
+    }
+
+    fn assert_summary_eq(actual: &AniSummary, expected: &AniSummary) {
+        assert_eq!(actual.shared_fragments, expected.shared_fragments);
+        assert_eq!(actual.shared_bases, expected.shared_bases);
+        assert_eq!(
+            actual.weighted_identity_sum.to_bits(),
+            expected.weighted_identity_sum.to_bits()
+        );
+        let actual_stats = actual.distribution_stats;
+        let expected_stats = expected.distribution_stats;
+        assert_eq!(
+            actual_stats.median.to_bits(),
+            expected_stats.median.to_bits()
+        );
+        assert_eq!(
+            actual_stats.stddev.to_bits(),
+            expected_stats.stddev.to_bits()
+        );
+        assert_eq!(actual_stats.mad.to_bits(), expected_stats.mad.to_bits());
+        assert_eq!(
+            actual_stats.ci_95_lower.to_bits(),
+            expected_stats.ci_95_lower.to_bits()
+        );
+        assert_eq!(
+            actual_stats.ci_95_upper.to_bits(),
+            expected_stats.ci_95_upper.to_bits()
+        );
+        assert_eq!(actual_stats.f99.to_bits(), expected_stats.f99.to_bits());
+        assert_eq!(actual_stats.f80.to_bits(), expected_stats.f80.to_bits());
+    }
+
+    #[test]
+    fn per_partition_compaction_preserves_final_summaries_and_keys() {
+        let query = QueryFile {
+            fragments: vec![
+                QueryFragment {
+                    id: 0,
+                    contig_id: 0,
+                    start: 0,
+                    end: 100,
+                    length: 100,
+                    minimizers: vec![1],
+                    seed_minimizers: vec![1],
+                },
+                QueryFragment {
+                    id: 1,
+                    contig_id: 1,
+                    start: 0,
+                    end: 100,
+                    length: 100,
+                    minimizers: vec![2],
+                    seed_minimizers: vec![2],
+                },
+            ],
+            contig_names: vec!["query-a".to_owned(), "query-b".to_owned()],
+            mapped_length: 200,
+        };
+        let partition_one = vec![
+            mapping(0, 0, 0, 100, 90.0),
+            mapping(0, 0, 0, 500, 95.0),
+            mapping(0, 0, 1, 501, 96.0),
+        ];
+        let partition_two = vec![
+            mapping(1, 1, 0, 0, 92.0),
+            mapping(1, 1, 0, 100, 91.0),
+            mapping(1, 1, 1, 1, 93.0),
+        ];
+        let raw = partition_one
+            .iter()
+            .chain(&partition_two)
+            .cloned()
+            .collect();
+        let per_partition_compacted = compact_reciprocal_best_mappings(partition_one, 100)
+            .into_iter()
+            .chain(compact_reciprocal_best_mappings(partition_two, 100))
+            .collect::<Vec<_>>();
+        assert_eq!(per_partition_compacted.len(), 2);
+
+        let expected = final_ani_computation(raw, &query, 2, 100);
+        let actual = final_ani_computation(per_partition_compacted, &query, 2, 100);
+
+        assert_eq!(actual.summaries.len(), expected.summaries.len());
+        for (actual, expected) in actual.summaries.iter().zip(&expected.summaries) {
+            assert_summary_eq(actual, expected);
+        }
+        for (actual_reference, expected_reference) in actual
+            .contig_summaries
+            .iter()
+            .zip(&expected.contig_summaries)
+        {
+            for (actual, expected) in actual_reference.iter().zip(expected_reference) {
+                assert_eq!(actual.eligible_fragments, expected.eligible_fragments);
+                assert_summary_eq(&actual.summary, &expected.summary);
+            }
+        }
+        assert!(actual.reciprocal_best_keys == expected.reciprocal_best_keys);
+    }
+
+    #[test]
+    fn reciprocal_best_compaction_breaks_exact_location_ties_deterministically() {
+        let lower = mapping(0, 0, 0, 100, 95.0);
+        let mut higher = lower.clone();
+        higher.jaccard = 0.80;
+
+        let forward = compact_reciprocal_best_mappings(vec![lower.clone(), higher.clone()], 100);
+        let reverse = compact_reciprocal_best_mappings(vec![higher, lower], 100);
+
+        assert_eq!(forward.len(), 1);
+        assert_eq!(reverse.len(), 1);
+        assert_eq!(forward[0].jaccard.to_bits(), 0.80_f64.to_bits());
+        assert_eq!(forward[0].jaccard.to_bits(), reverse[0].jaccard.to_bits());
     }
 
     #[test]
@@ -744,5 +994,17 @@ mod tests {
             "expected significant P80, got {}",
             stats.p80
         );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn query_coordinate_overflow_is_contextual_invalid_data() {
+        let value = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+        let error = checked_query_coordinate(value, "fragment end", "contig-A").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("contig-A"));
+        assert!(error.to_string().contains("fragment end"));
+        assert!(error.to_string().contains(&value.to_string()));
     }
 }

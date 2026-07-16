@@ -2,7 +2,7 @@
 
 #[cfg(debug_assertions)]
 use std::{env, mem::size_of};
-use std::{fs, time::Instant};
+use std::{fs, io, time::Instant};
 
 use crate::ani::{CliArgs, DEFAULT_MPHF_GAMMA};
 #[cfg(debug_assertions)]
@@ -13,7 +13,16 @@ use crate::ani::{MinimizerKey, ReferenceMinimizer, SeedHit};
 pub(crate) struct RuntimeOptions {
     pub(crate) progress_enabled: bool,
     pub(crate) worker_threads: usize,
+    pub(crate) output_threads: usize,
     pub(crate) mphf_gamma: f64,
+    build_progress: Option<BuildProgressContext>,
+}
+
+#[derive(Clone, Copy)]
+struct BuildProgressContext {
+    generation_id: [u8; 64],
+    generation_id_len: u8,
+    shard_index: usize,
 }
 
 impl Default for RuntimeOptions {
@@ -21,12 +30,21 @@ impl Default for RuntimeOptions {
         Self {
             progress_enabled: false,
             worker_threads: 0,
+            output_threads: 0,
             mphf_gamma: DEFAULT_MPHF_GAMMA,
+            build_progress: None,
         }
     }
 }
 
 impl RuntimeOptions {
+    pub(crate) fn with_progress_enabled(self, progress_enabled: bool) -> Self {
+        Self {
+            progress_enabled,
+            ..self
+        }
+    }
+
     pub(crate) fn effective_worker_threads(self) -> usize {
         self.worker_threads.max(1)
     }
@@ -37,14 +55,56 @@ impl RuntimeOptions {
             ..self
         }
     }
-}
 
-#[cfg(debug_assertions)]
-#[derive(Default)]
-pub(crate) struct QueryMemoryEstimate {
-    pub(crate) fragment_struct_bytes: usize,
-    pub(crate) query_minimizer_vec_bytes: usize,
-    pub(crate) seed_minimizer_vec_bytes: usize,
+    pub(crate) fn effective_output_threads(self) -> usize {
+        if self.output_threads == 0 {
+            self.effective_worker_threads()
+        } else {
+            self.output_threads
+        }
+    }
+
+    pub(crate) fn with_output_threads(self, output_threads: usize) -> Self {
+        Self {
+            output_threads: output_threads.max(1),
+            ..self
+        }
+    }
+
+    pub(crate) fn with_mphf_gamma(self, mphf_gamma: f64) -> Self {
+        Self { mphf_gamma, ..self }
+    }
+
+    pub(crate) fn with_build_progress(
+        self,
+        generation_id: &str,
+        shard_index: usize,
+    ) -> io::Result<Self> {
+        let generation_id_len: u8 = u8::try_from(generation_id.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "database build generation identifier is too long for progress attribution",
+            )
+        })?;
+        let mut generation_id_bytes: [u8; 64] = [0; 64];
+        let destination = generation_id_bytes
+            .get_mut(..generation_id.len())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "database build generation identifier exceeds 64 bytes",
+                )
+            })?;
+        destination.copy_from_slice(generation_id.as_bytes());
+        Ok(Self {
+            build_progress: Some(BuildProgressContext {
+                generation_id: generation_id_bytes,
+                generation_id_len,
+                shard_index,
+            }),
+            ..self
+        })
+    }
 }
 
 /// Return the current process peak RSS in kilobytes, or -1 when unavailable.
@@ -93,6 +153,31 @@ pub(crate) fn emit_progress(stage: &str, message: &str, start: Instant) {
         "PROGRESS\tstage={stage}\t{message}\trss_gib={rss_gib:.3}\telapsed_s={:.3}",
         start.elapsed().as_secs_f64()
     );
+}
+
+/// Emit a nested build event with explicit generation, shard, and assigned-worker attribution.
+pub(crate) fn emit_runtime_progress(
+    runtime_options: RuntimeOptions,
+    stage: &str,
+    message: &str,
+    start: Instant,
+) {
+    if let Some(context) = runtime_options.build_progress {
+        let generation_id =
+            std::str::from_utf8(&context.generation_id[..usize::from(context.generation_id_len)])
+                .expect("build progress generation id came from UTF-8");
+        emit_progress(
+            stage,
+            &format!(
+                "generation_id={generation_id}\tshard={}\tassigned_threads={}\t{message}",
+                context.shard_index,
+                runtime_options.effective_worker_threads()
+            ),
+            start,
+        );
+    } else {
+        emit_progress(stage, message, start);
+    }
 }
 
 #[cfg(debug_assertions)]

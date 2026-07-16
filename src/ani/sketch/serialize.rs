@@ -1,9 +1,12 @@
 //! Reading and writing sketch files, shard manifests, and contig sidecars.
 
 use std::{
-    fs, io,
-    io::{BufWriter, Write},
-    path::{Path, PathBuf},
+    fs,
+    fs::OpenOptions,
+    io,
+    io::{BufReader, BufWriter, Read, Write},
+    path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,16 +14,77 @@ use gzp::{deflate::Bgzf, ZBuilder};
 
 use crate::ani::{
     append_path_suffix, compress_file_to_bgzf, gzp_error_to_io, is_gzip_path, read_text_maybe_gzip,
-    FastaInput, ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
+    ContigRecord, FastaInput, ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
 };
 
 pub(crate) struct SketchOutput {
     pub(crate) final_path: PathBuf,
     pub(crate) write_path: PathBuf,
+    pub(crate) publish_path: PathBuf,
     pub(crate) scratch: Option<ScratchFile>,
     pub(crate) writer: Option<BufWriter<fs::File>>,
     pub(crate) bgzip: bool,
     pub(crate) threads: usize,
+    published: bool,
+}
+
+static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
+
+fn create_sibling_temp_file(final_path: &Path) -> io::Result<(PathBuf, fs::File)> {
+    if let Some(parent) = final_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    for _ in 0..1024 {
+        let id: u64 = NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let suffix: String = format!(".tmp.{}.{id}", std::process::id());
+        let path: PathBuf = append_path_suffix(final_path, &suffix);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "failed to allocate a temporary output next to {}",
+            final_path.display()
+        ),
+    ))
+}
+
+fn sync_parent(path: &Path) -> io::Result<()> {
+    let parent: &Path = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::File::open(parent)?.sync_all()
+}
+
+fn publish_temp_file(temp_path: &Path, final_path: &Path) -> io::Result<()> {
+    fs::File::open(temp_path)?.sync_all()?;
+    fs::rename(temp_path, final_path)?;
+    sync_parent(final_path)
+}
+
+pub(crate) fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let (temp_path, file): (PathBuf, fs::File) = create_sibling_temp_file(path)?;
+    let result: io::Result<()> = (|| {
+        let mut writer: BufWriter<fs::File> = BufWriter::new(file);
+        writer.write_all(bytes)?;
+        writer.flush()?;
+        drop(writer);
+        publish_temp_file(&temp_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 impl SketchOutput {
@@ -37,27 +101,33 @@ impl SketchOutput {
             fs::create_dir_all(parent)?;
         }
 
+        let (publish_path, publish_file): (PathBuf, fs::File) =
+            create_sibling_temp_file(final_path)?;
         if bgzip {
             let (scratch, file): (ScratchFile, fs::File) =
                 ScratchFile::create(tmp_dir, "uncompressed-sketch")?;
             let write_path: PathBuf = scratch.path.clone();
+            drop(publish_file);
             Ok(Self {
                 final_path: final_path.to_path_buf(),
                 write_path,
+                publish_path,
                 scratch: Some(scratch),
                 writer: Some(BufWriter::new(file)),
                 bgzip,
                 threads,
+                published: false,
             })
         } else {
-            let file: fs::File = fs::File::create(final_path)?;
             Ok(Self {
                 final_path: final_path.to_path_buf(),
-                write_path: final_path.to_path_buf(),
+                write_path: publish_path.clone(),
+                publish_path,
                 scratch: None,
-                writer: Some(BufWriter::new(file)),
+                writer: Some(BufWriter::new(publish_file)),
                 bgzip,
                 threads,
+                published: false,
             })
         }
     }
@@ -74,42 +144,194 @@ impl SketchOutput {
         }
 
         if self.bgzip {
-            compress_file_to_bgzf(&self.write_path, &self.final_path, self.threads)?;
+            compress_file_to_bgzf(&self.write_path, &self.publish_path, self.threads)?;
         }
 
+        publish_temp_file(&self.publish_path, &self.final_path)?;
+        self.published = true;
         let output_len: u64 = fs::metadata(&self.final_path)?.len();
         drop(self.scratch.take());
         Ok(output_len)
     }
 }
 
-pub(crate) fn contig_sidecar_path(sketch_path: &Path) -> PathBuf {
-    let sketch_path_string: String = sketch_path.to_string_lossy().into_owned();
-    if let Some(uncompressed_name) = sketch_path_string.strip_suffix(".bgz") {
-        return append_path_suffix(Path::new(uncompressed_name), ".contigs.tsv.bgz");
+impl Drop for SketchOutput {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.publish_path);
+        }
+    }
+}
+
+fn content_addressed_contig_sidecar_path(sketch_path: &Path, content_id: &str) -> PathBuf {
+    let filename: String = if is_gzip_path(sketch_path) {
+        format!("fasterani-contigs.{content_id}.tsv.bgz")
+    } else {
+        format!("fasterani-contigs.{content_id}.tsv")
+    };
+    sketch_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.join(&filename))
+        .unwrap_or_else(|| PathBuf::from(filename))
+}
+
+struct Fnv128Writer {
+    state: u128,
+}
+
+impl Default for Fnv128Writer {
+    fn default() -> Self {
+        Self {
+            state: 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d,
+        }
+    }
+}
+
+impl Write for Fnv128Writer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        const FNV_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+        for byte in bytes {
+            self.state ^= u128::from(*byte);
+            self.state = self.state.wrapping_mul(FNV_PRIME);
+        }
+        Ok(bytes.len())
     }
 
-    append_path_suffix(sketch_path, ".contigs.tsv")
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn write_contig_name_records(
+    writer: &mut dyn Write,
+    files: &[ReferenceFile],
+    contig_names: &[ReferenceContigName],
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "contig_id\treference_file_id\treference_file\treference_contig\tsegment_start\tsegment_end"
+    )?;
+
+    for (contig_id, contig) in contig_names.iter().enumerate() {
+        let reference_file: &str = files
+            .get(contig.file_id)
+            .map_or("unknown", |file| file.path.as_str());
+        writeln!(
+            writer,
+            "{contig_id}\t{}\t{}\t{}\t{}\t{}",
+            contig.file_id,
+            tsv_field(reference_file),
+            tsv_field(&contig.name),
+            contig.segment_start,
+            contig.segment_end
+        )?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn new_contig_sidecar_path(
+    sketch_path: &Path,
+    files: &[ReferenceFile],
+    contig_names: &[ReferenceContigName],
+) -> io::Result<PathBuf> {
+    let mut digest = Fnv128Writer::default();
+    write_contig_name_records(&mut digest, files, contig_names)?;
+    Ok(content_addressed_contig_sidecar_path(
+        sketch_path,
+        &format!("{:032x}", digest.state),
+    ))
+}
+
+pub(crate) fn contig_sidecar_filename(sidecar_path: &Path) -> io::Result<String> {
+    sidecar_path.file_name().map_or_else(
+        || {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "contig sidecar path {} has no filename",
+                    sidecar_path.display()
+                ),
+            ))
+        },
+        |name| Ok(name.to_string_lossy().into_owned()),
+    )
+}
+
+pub(crate) fn contig_sidecar_entry_path(sketch_path: &Path, filename: &str) -> io::Result<PathBuf> {
+    let filename_path: PathBuf = PathBuf::from(filename);
+    let mut components = filename_path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid contig sidecar filename in sketch metadata: {filename:?}"),
+        ));
+    }
+
+    Ok(sketch_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.join(&filename_path))
+        .unwrap_or(filename_path))
 }
 
 pub(crate) fn manifest_path(prefix: &Path) -> PathBuf {
     append_path_suffix(prefix, ".manifest.json")
 }
 
-pub(crate) fn shard_path(prefix: &Path, shard_index: usize, bgzip: bool) -> PathBuf {
+pub(crate) fn global_frequency_path(prefix: &Path, generation_id: &str) -> PathBuf {
+    append_path_suffix(prefix, &format!(".{generation_id}.frequencies.bin"))
+}
+
+pub(crate) fn global_frequency_filename(prefix: &Path, generation_id: &str) -> String {
+    let path: PathBuf = global_frequency_path(prefix, generation_id);
+    path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+pub(crate) fn global_frequency_entry_path(prefix: &Path, filename: &str) -> PathBuf {
+    let filename_path: PathBuf = PathBuf::from(filename);
+    if filename_path.is_absolute() {
+        return filename_path;
+    }
+
+    prefix
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.join(filename))
+        .unwrap_or(filename_path)
+}
+
+pub(crate) fn shard_path(
+    prefix: &Path,
+    generation_id: &str,
+    shard_index: usize,
+    bgzip: bool,
+) -> PathBuf {
     if bgzip {
-        append_path_suffix(prefix, &format!(".{shard_index}.fasketch.bgz"))
+        append_path_suffix(
+            prefix,
+            &format!(".{generation_id}.{shard_index}.fasketch.bgz"),
+        )
     } else {
-        append_path_suffix(prefix, &format!(".{shard_index}.fasketch"))
+        append_path_suffix(prefix, &format!(".{generation_id}.{shard_index}.fasketch"))
     }
 }
 
-pub(crate) fn shard_filename(prefix: &Path, shard_index: usize, bgzip: bool) -> String {
-    shard_path(prefix, shard_index, bgzip)
+pub(crate) fn shard_filename(
+    prefix: &Path,
+    generation_id: &str,
+    shard_index: usize,
+    bgzip: bool,
+) -> String {
+    shard_path(prefix, generation_id, shard_index, bgzip)
         .file_name()
         .map_or_else(
             || {
-                shard_path(prefix, shard_index, bgzip)
+                shard_path(prefix, generation_id, shard_index, bgzip)
                     .to_string_lossy()
                     .into_owned()
             },
@@ -178,13 +400,59 @@ fn tsv_field(value: &str) -> String {
         .collect()
 }
 
+fn files_equal(left: &Path, right: &Path) -> io::Result<bool> {
+    if fs::metadata(left)?.len() != fs::metadata(right)?.len() {
+        return Ok(false);
+    }
+
+    let mut left_reader = BufReader::new(fs::File::open(left)?);
+    let mut right_reader = BufReader::new(fs::File::open(right)?);
+    let mut left_buffer = [0u8; 64 * 1024];
+    let mut right_buffer = [0u8; 64 * 1024];
+    loop {
+        let left_read: usize = left_reader.read(&mut left_buffer)?;
+        let right_read: usize = right_reader.read(&mut right_buffer)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn publish_immutable_temp_file(temp_path: &Path, final_path: &Path) -> io::Result<()> {
+    fs::File::open(temp_path)?.sync_all()?;
+    match fs::hard_link(temp_path, final_path) {
+        Ok(()) => {
+            fs::remove_file(temp_path)?;
+            sync_parent(final_path)
+        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            let identical: bool = files_equal(temp_path, final_path)?;
+            fs::remove_file(temp_path)?;
+            if identical {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "content-addressed contig sidecar {} already exists with different bytes",
+                        final_path.display()
+                    ),
+                ))
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub(crate) fn write_contig_name_sidecar(
-    sketch_path: &Path,
+    sidecar_path: &Path,
     files: &[ReferenceFile],
     contig_names: &[ReferenceContigName],
-    threads: usize,
-) -> io::Result<()> {
-    let path: PathBuf = contig_sidecar_path(sketch_path);
+) -> io::Result<u64> {
+    let path: PathBuf = sidecar_path.to_path_buf();
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -192,45 +460,26 @@ pub(crate) fn write_contig_name_sidecar(
         fs::create_dir_all(parent)?;
     }
 
-    let write_records = |writer: &mut dyn Write| -> io::Result<()> {
-        writeln!(
-            writer,
-            "contig_id\treference_file_id\treference_file\treference_contig\tsegment_start\tsegment_end"
-        )?;
-
-        for (contig_id, contig) in contig_names.iter().enumerate() {
-            let reference_file: &str = files
-                .get(contig.file_id)
-                .map_or("unknown", |file| file.path.as_str());
-            writeln!(
-                writer,
-                "{contig_id}\t{}\t{}\t{}\t{}\t{}",
-                contig.file_id,
-                tsv_field(reference_file),
-                tsv_field(&contig.name),
-                contig.segment_start,
-                contig.segment_end
-            )?;
+    let (temp_path, file): (PathBuf, fs::File) = create_sibling_temp_file(&path)?;
+    let result: io::Result<()> = (|| {
+        if is_gzip_path(&path) {
+            let mut writer = ZBuilder::<Bgzf, fs::File>::new()
+                .num_threads(1)
+                .from_writer(file);
+            write_contig_name_records(&mut *writer, files, contig_names)?;
+            writer.finish().map_err(gzp_error_to_io)?;
+        } else {
+            let mut writer: BufWriter<fs::File> = BufWriter::new(file);
+            write_contig_name_records(&mut writer, files, contig_names)?;
+            writer.flush()?;
         }
-
-        Ok(())
-    };
-
-    if is_gzip_path(&path) {
-        let file: fs::File = fs::File::create(path)?;
-        let mut writer = ZBuilder::<Bgzf, fs::File>::new()
-            .num_threads(threads.max(1))
-            .from_writer(file);
-        write_records(&mut *writer)?;
-        writer.finish().map_err(gzp_error_to_io)?;
-    } else {
-        let file: fs::File = fs::File::create(path)?;
-        let mut writer: BufWriter<fs::File> = BufWriter::new(file);
-        write_records(&mut writer)?;
-        writer.flush()?;
+        publish_immutable_temp_file(&temp_path, &path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
     }
-
-    Ok(())
+    result?;
+    Ok(fs::metadata(&path)?.len())
 }
 
 fn load_contig_sidecar_contents(path: &Path) -> io::Result<String> {
@@ -243,31 +492,6 @@ fn load_contig_sidecar_contents(path: &Path) -> io::Result<String> {
             ),
         )
     })
-}
-
-fn uncompressed_contig_sidecar_path_for_bgzip_sketch(sketch_path: &Path) -> Option<PathBuf> {
-    let sketch_path_string: String = sketch_path.to_string_lossy().into_owned();
-    sketch_path_string
-        .strip_suffix(".bgz")
-        .map(|uncompressed_name| append_path_suffix(Path::new(uncompressed_name), ".contigs.tsv"))
-}
-
-fn read_contig_sidecar_text(sketch_path: &Path) -> io::Result<(PathBuf, String)> {
-    let path: PathBuf = contig_sidecar_path(sketch_path);
-    match load_contig_sidecar_contents(&path) {
-        Ok(contents) => Ok((path, contents)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if let Some(fallback_path) =
-                uncompressed_contig_sidecar_path_for_bgzip_sketch(sketch_path)
-            {
-                let contents: String = load_contig_sidecar_contents(&fallback_path)?;
-                Ok((fallback_path, contents))
-            } else {
-                Err(error)
-            }
-        }
-        Err(error) => Err(error),
-    }
 }
 
 fn parse_usize_field(value: &str, field: &str, path: &Path) -> io::Result<usize> {
@@ -295,10 +519,56 @@ fn parse_u32_field(value: &str, field: &str, path: &Path) -> io::Result<u32> {
 }
 
 pub(crate) fn load_contig_name_sidecar(
-    sketch_path: &Path,
+    sidecar_path: &Path,
     expected_contigs: usize,
+    expected_file_bytes: u64,
+    expected_files: &[ReferenceFile],
+    expected_contig_records: &[ContigRecord],
 ) -> io::Result<Vec<ReferenceContigName>> {
-    let (path, contents): (PathBuf, String) = read_contig_sidecar_text(sketch_path)?;
+    let path: PathBuf = sidecar_path.to_path_buf();
+    let actual_file_bytes: u64 = fs::metadata(&path)
+        .map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "failed to inspect contig sidecar {}; rebuild the sketch database to create it: {err}",
+                    path.display()
+                ),
+            )
+        })?
+        .len();
+    if actual_file_bytes != expected_file_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "contig sidecar {} has {actual_file_bytes} bytes, expected {expected_file_bytes}; rebuild the sketch database",
+                path.display()
+            ),
+        ));
+    }
+    let contents: String = load_contig_sidecar_contents(&path)?;
+    let mut digest = Fnv128Writer::default();
+    digest.write_all(contents.as_bytes())?;
+    let expected_content_path: PathBuf =
+        content_addressed_contig_sidecar_path(&path, &format!("{:032x}", digest.state));
+    if expected_content_path.file_name() != path.file_name() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "contig sidecar {} does not match its content digest; rebuild the sketch database",
+                path.display()
+            ),
+        ));
+    }
+    if expected_contig_records.len() != expected_contigs {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "reference sketch has {} binary contig records, expected {expected_contigs}",
+                expected_contig_records.len()
+            ),
+        ));
+    }
     let mut lines = contents.lines();
     let header: &str = lines.next().ok_or_else(|| {
         io::Error::new(
@@ -342,11 +612,54 @@ pub(crate) fn load_contig_name_sidecar(
             ));
         }
 
+        let file_id: usize = parse_usize_field(fields[1], "reference_file_id", &path)?;
+        let expected_record: &ContigRecord = &expected_contig_records[contig_id];
+        if file_id != expected_record.file_id as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "contig sidecar {} contig_id {contig_id} has reference_file_id {file_id}, but the sketch record has {}",
+                    path.display(),
+                    expected_record.file_id
+                ),
+            ));
+        }
+        let expected_file: &ReferenceFile = expected_files.get(file_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "contig sidecar {} contig_id {contig_id} references missing file_id {file_id}",
+                    path.display()
+                ),
+            )
+        })?;
+        let expected_reference_file: String = tsv_field(&expected_file.path);
+        if fields[2] != expected_reference_file {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "contig sidecar {} contig_id {contig_id} reference_file does not match sketch file_id {file_id}",
+                    path.display()
+                ),
+            ));
+        }
+        let segment_start: u32 = parse_u32_field(fields[4], "segment_start", &path)?;
+        let segment_end: u32 = parse_u32_field(fields[5], "segment_end", &path)?;
+        if segment_start > segment_end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "contig sidecar {} contig_id {contig_id} has segment_start {segment_start} after segment_end {segment_end}",
+                    path.display()
+                ),
+            ));
+        }
+
         contigs.push(ReferenceContigName {
-            file_id: parse_usize_field(fields[1], "reference_file_id", &path)?,
+            file_id,
             name: fields[3].to_string(),
-            segment_start: parse_u32_field(fields[4], "segment_start", &path)?,
-            segment_end: parse_u32_field(fields[5], "segment_end", &path)?,
+            segment_start,
+            segment_end,
         });
     }
 
@@ -371,10 +684,32 @@ pub(crate) fn unix_timestamp_seconds() -> io::Result<u64> {
         .as_secs())
 }
 
+pub(crate) fn build_generation_id() -> io::Result<String> {
+    let nanos: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| io::Error::other(format!("system clock is before UNIX epoch: {err}")))?
+        .as_nanos();
+    Ok(format!("{nanos:x}-{}", std::process::id()))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{write_bytes_atomically, SketchOutput};
     use crate::ani::{manifest_path, shard_filename, shard_path, sketch_reference_name};
-    use std::path::PathBuf;
+    use std::{
+        env, fs, io,
+        io::Write,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("fasterani-{label}-{}-{nanos}", std::process::id()))
+    }
 
     #[test]
     fn sharded_sketch_paths_use_prefix_suffixes() {
@@ -385,15 +720,21 @@ mod tests {
             PathBuf::from("/tmp/database.manifest.json")
         );
         assert_eq!(
-            shard_path(&prefix, 2, false),
-            PathBuf::from("/tmp/database.2.fasketch")
+            shard_path(&prefix, "generation", 2, false),
+            PathBuf::from("/tmp/database.generation.2.fasketch")
         );
-        assert_eq!(shard_filename(&prefix, 2, false), "database.2.fasketch");
         assert_eq!(
-            shard_path(&prefix, 2, true),
-            PathBuf::from("/tmp/database.2.fasketch.bgz")
+            shard_filename(&prefix, "generation", 2, false),
+            "database.generation.2.fasketch"
         );
-        assert_eq!(shard_filename(&prefix, 2, true), "database.2.fasketch.bgz");
+        assert_eq!(
+            shard_path(&prefix, "generation", 2, true),
+            PathBuf::from("/tmp/database.generation.2.fasketch.bgz")
+        );
+        assert_eq!(
+            shard_filename(&prefix, "generation", 2, true),
+            "database.generation.2.fasketch.bgz"
+        );
     }
 
     #[test]
@@ -403,5 +744,40 @@ mod tests {
             "GCF_000146045.2_R64_genomic.fna"
         );
         assert_eq!(sketch_reference_name("relative.fa"), "relative.fa");
+    }
+
+    #[test]
+    fn interrupted_atomic_output_preserves_the_published_file() -> io::Result<()> {
+        let directory = unique_test_dir("atomic-output-interruption");
+        fs::create_dir_all(&directory)?;
+        let path = directory.join("artifact.bin");
+        fs::write(&path, b"published-generation")?;
+
+        {
+            let mut output = SketchOutput::create(&path, None, false, 1)?;
+            output.writer_mut()?.write_all(b"incomplete-generation")?;
+            // Dropping before finish models a failed build. The sibling temporary
+            // file is removed and the previously published artifact is untouched.
+        }
+
+        assert_eq!(fs::read(&path)?, b"published-generation");
+        assert_eq!(fs::read_dir(&directory)?.count(), 1);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_byte_write_replaces_only_after_complete_write() -> io::Result<()> {
+        let directory = unique_test_dir("atomic-byte-write");
+        fs::create_dir_all(&directory)?;
+        let path = directory.join("manifest.json");
+        fs::write(&path, b"old-manifest")?;
+
+        write_bytes_atomically(&path, b"new-manifest")?;
+
+        assert_eq!(fs::read(&path)?, b"new-manifest");
+        assert_eq!(fs::read_dir(&directory)?.count(), 1);
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

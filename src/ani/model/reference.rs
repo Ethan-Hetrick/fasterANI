@@ -2,14 +2,14 @@
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use boomphf::Mphf;
 use serde::{Deserialize, Serialize};
 
 use crate::ani::{
-    default_fragment_length, default_max_shard_minimizers, IndexBuildMode, MinimizerKey,
-    MmapReferenceContigs, MmapReferenceIndex, ReferenceHitMap,
+    default_fragment_length, default_max_shard_minimizers, GlobalFrequencyIndex, IndexBuildMode,
+    MinimizerKey, MmapReferenceContigs, MmapReferenceIndex, ReferenceHitMap,
 };
 
 /// The FastANI-style algorithm parameters that travel together through sketch
@@ -68,6 +68,11 @@ pub(crate) struct ContigRecord {
     pub(crate) minimizer_count: u32,
 }
 
+const _: [(); 16] = [(); std::mem::size_of::<ContigRecord>()];
+const _: [(); 0] = [(); std::mem::offset_of!(ContigRecord, minimizer_offset)];
+const _: [(); 8] = [(); std::mem::offset_of!(ContigRecord, file_id)];
+const _: [(); 12] = [(); std::mem::offset_of!(ContigRecord, minimizer_count)];
+
 /// A reference minimizer hash and its zero-based contig position.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -75,6 +80,10 @@ pub(crate) struct ReferenceMinimizer {
     pub(crate) hash: MinimizerKey,
     pub(crate) position: u32,
 }
+
+const _: [(); 8] = [(); std::mem::size_of::<ReferenceMinimizer>()];
+const _: [(); 0] = [(); std::mem::offset_of!(ReferenceMinimizer, hash)];
+const _: [(); 4] = [(); std::mem::offset_of!(ReferenceMinimizer, position)];
 
 /// Compact seed hit stored in the reference index.
 #[repr(C)]
@@ -84,12 +93,17 @@ pub(crate) struct SeedHit {
     pub(crate) position: u32,
 }
 
+const _: [(); 8] = [(); std::mem::size_of::<SeedHit>()];
+const _: [(); 0] = [(); std::mem::offset_of!(SeedHit, reference_contig_id)];
+const _: [(); 4] = [(); std::mem::offset_of!(SeedHit, position)];
+
 /// Fully loaded reference sketch, backed by either an in-memory hash map or an mmap cache.
 pub(crate) struct ReferenceSketch {
     pub(crate) files: Vec<ReferenceFile>,
     pub(crate) contigs: ReferenceContigs,
     pub(crate) contig_names: Option<Vec<ReferenceContigName>>,
     pub(crate) index: ReferenceIndex,
+    pub(crate) global_frequencies: Option<Arc<GlobalFrequencyIndex>>,
 }
 
 /// Reference contig minimizers, either owned after a fresh build or sliced from a loaded sketch.
@@ -128,6 +142,8 @@ pub(crate) struct CachedReferenceMetadata {
     pub(crate) k: usize,
     pub(crate) w: usize,
     #[serde(default)]
+    pub(crate) minimizer_hash_seed: u32,
+    #[serde(default)]
     pub(crate) key_mode: String,
     #[serde(default = "default_fragment_length")]
     pub(crate) fragment_length: u32,
@@ -142,6 +158,10 @@ pub(crate) struct CachedReferenceMetadata {
     pub(crate) hit_count: usize,
     pub(crate) contig_count: usize,
     pub(crate) reference_minimizer_count: usize,
+    #[serde(default)]
+    pub(crate) contig_sidecar_filename: String,
+    #[serde(default)]
+    pub(crate) contig_sidecar_file_bytes: u64,
 }
 
 /// Top-level metadata for a manifest-backed sharded reference database.
@@ -151,6 +171,8 @@ pub(crate) struct ShardManifest {
     pub(crate) database_schema_version: u32,
     pub(crate) k: usize,
     pub(crate) w: usize,
+    #[serde(default)]
+    pub(crate) minimizer_hash_seed: u32,
     pub(crate) key_mode: String,
     #[serde(default = "default_fragment_length")]
     pub(crate) fragment_length: u32,
@@ -166,6 +188,14 @@ pub(crate) struct ShardManifest {
     pub(crate) total_reference_minimizers: usize,
     pub(crate) total_shard_unique_minimizers: usize,
     pub(crate) build_unix_seconds: u64,
+    #[serde(default)]
+    pub(crate) generation_id: String,
+    #[serde(default)]
+    pub(crate) global_frequency_filename: String,
+    #[serde(default)]
+    pub(crate) global_frequency_file_bytes: u64,
+    #[serde(default)]
+    pub(crate) total_unique_minimizers: usize,
     pub(crate) build_args: Vec<String>,
     pub(crate) reference_list_checksum: u64,
     pub(crate) shards: Vec<ShardManifestEntry>,
@@ -182,6 +212,8 @@ pub(crate) struct ShardManifestEntry {
     pub(crate) mapped_reference_length: u64,
     pub(crate) reference_minimizers: usize,
     pub(crate) unique_minimizers: usize,
+    #[serde(default)]
+    pub(crate) file_bytes: u64,
 }
 
 /// Small summary returned by a streaming shard build.

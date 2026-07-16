@@ -3,7 +3,7 @@
 use std::{
     fs, io,
     io::{BufWriter, Write},
-    mem::size_of,
+    mem::{offset_of, size_of},
     path::Path,
     str::FromStr,
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
@@ -64,6 +64,15 @@ pub(crate) struct PartitionHitRecord {
     pub(crate) hit: SeedHit,
 }
 
+// The AVX2 gather below uses these byte offsets directly. Keep the assumptions
+// compile-time checked instead of relying on an undocumented repr(C) layout.
+const _: [(); 12] = [(); size_of::<PartitionHitRecord>()];
+const _: [(); 0] = [(); offset_of!(PartitionHitRecord, key)];
+const _: [(); 4] = [(); offset_of!(PartitionHitRecord, hit)];
+const _: [(); 8] = [(); size_of::<SeedHit>()];
+const _: [(); 0] = [(); offset_of!(SeedHit, reference_contig_id)];
+const _: [(); 4] = [(); offset_of!(SeedHit, position)];
+
 /// One grouped minimizer key and the hit range assigned to it in the final payload file.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -98,7 +107,36 @@ pub(crate) fn estimate_partitioned_shard_memory_bytes(estimated_minimizers: usiz
 pub(crate) fn database_build_parallelism(threads: usize, shard_plans: &[ShardPlan]) -> usize {
     let requested_threads: usize = threads.max(1);
     let shard_count: usize = shard_plans.len().max(1);
-    requested_threads.min(shard_count)
+    let thread_limit: usize = requested_threads.min(shard_count);
+    if shard_plans.is_empty() {
+        return 1;
+    }
+
+    // Give each requested worker one partition-sized memory permit, while always
+    // allowing the largest planned shard to make progress. Counting the largest
+    // shards first makes the resulting concurrency safe for every scheduling order.
+    let mut estimated_bytes: Vec<usize> = shard_plans
+        .iter()
+        .map(|plan| estimate_partitioned_shard_memory_bytes(plan.estimated_minimizers))
+        .collect();
+    estimated_bytes.sort_unstable_by(|left, right| right.cmp(left));
+    let memory_budget: usize = requested_threads
+        .saturating_mul(DEFAULT_PARTITION_TARGET_BYTES)
+        .max(estimated_bytes[0]);
+    let mut permitted: usize = 0;
+    let mut reserved_bytes: usize = 0;
+    for bytes in estimated_bytes.into_iter().take(thread_limit) {
+        let Some(next_reserved) = reserved_bytes.checked_add(bytes) else {
+            break;
+        };
+        if permitted > 0 && next_reserved > memory_budget {
+            break;
+        }
+        reserved_bytes = next_reserved;
+        permitted += 1;
+    }
+
+    permitted.max(1)
 }
 
 fn ceil_div_usize(numerator: usize, denominator: usize) -> usize {
@@ -329,6 +367,7 @@ pub(crate) fn shard_manifest_compatibility_error(
     manifest: &ShardManifest,
     kmer_size: usize,
     window_size: usize,
+    minimizer_hash_seed: u32,
     fragment_length: u32,
     min_fragment_length: u32,
     split_n_run: usize,
@@ -344,17 +383,19 @@ pub(crate) fn shard_manifest_compatibility_error(
         || manifest.database_schema_version != SKETCH_DATABASE_SCHEMA_VERSION
         || manifest.k != kmer_size
         || manifest.w != window_size
+        || manifest.minimizer_hash_seed != minimizer_hash_seed
         || manifest.key_mode != SKETCH_KEY_MODE
         || manifest.fragment_length != fragment_length
         || manifest.min_fragment_length != min_fragment_length
         || manifest.split_n_run != split_n_run
     {
         return Some(format!(
-            "reference sketch database is incompatible: sketch_format_version={} database_schema_version={} k={} w={} key_mode={} fragment_length={} min_fragment_length={} split_n_run={}",
+            "reference sketch database is incompatible: sketch_format_version={} database_schema_version={} k={} w={} minimizer_hash_seed={} key_mode={} fragment_length={} min_fragment_length={} split_n_run={}; rebuild the sketch with the requested parameters",
             manifest.sketch_format_version,
             manifest.database_schema_version,
             manifest.k,
             manifest.w,
+            manifest.minimizer_hash_seed,
             manifest.key_mode,
             manifest.fragment_length,
             manifest.min_fragment_length,
@@ -440,24 +481,27 @@ impl PartitionWriters {
     }
 
     /// Push a slice of records using batch SIMD partition ID computation.
-    /// Flush conditions are evaluated after all records are pushed, not after each one.
-    /// This means buffers may transiently exceed `buffer_record_limit` by up to
-    /// `records.len() - 1` entries; call `flush_all` after if exact limit adherence matters.
-    /// For the streaming build, the brief overrun is acceptable since the flush check
-    /// in the loop catches the common case.
+    /// Each partition is flushed as soon as it reaches `buffer_record_limit`, so a
+    /// large input batch cannot cause an unbounded transient allocation.
     /// Re-benchmark this path in isolation before retuning or discarding it:
     /// a prior combined landing was masked by branch-predictor interference from
     /// unrelated hot-path changes rather than by a problem in batch routing itself.
     pub(crate) fn push_batch(&mut self, records: &[PartitionHitRecord]) -> io::Result<()> {
         if self.partition_count <= 1 {
-            self.buffers[0].extend_from_slice(records);
-            if self.buffers[0].len() >= self.buffer_record_limit {
-                self.flush_partition(0)?;
+            for chunk in records.chunks(self.buffer_record_limit) {
+                if self.buffers[0].len().saturating_add(chunk.len()) > self.buffer_record_limit {
+                    self.flush_partition(0)?;
+                }
+                self.buffers[0].extend_from_slice(chunk);
+                if self.buffers[0].len() == self.buffer_record_limit {
+                    self.flush_partition(0)?;
+                }
             }
             return Ok(());
         }
 
         let shift = self.partition_shift;
+        let limit = self.buffer_record_limit;
         let mut ids = [0usize; 8];
         let mut i = 0usize;
 
@@ -468,22 +512,21 @@ impl PartitionWriters {
                 .expect("slice of exactly 8 elements");
             compute_8_partition_ids(chunk, shift, &mut ids);
             for k in 0..8 {
-                self.buffers[ids[k]].push(records[i + k]);
+                let partition_index = ids[k];
+                self.buffers[partition_index].push(records[i + k]);
+                if self.buffers[partition_index].len() == limit {
+                    self.flush_partition(partition_index)?;
+                }
             }
             i += 8;
         }
 
         // Scalar tail.
         for record in &records[i..] {
-            let pid = (record.key >> shift) as usize;
-            self.buffers[pid].push(*record);
-        }
-
-        // Flush any buffers that crossed the limit.
-        let limit = self.buffer_record_limit;
-        for pid in 0..self.partition_count() {
-            if self.buffers[pid].len() >= limit {
-                self.flush_partition(pid)?;
+            let partition_index = (record.key >> shift) as usize;
+            self.buffers[partition_index].push(*record);
+            if self.buffers[partition_index].len() == limit {
+                self.flush_partition(partition_index)?;
             }
         }
 
@@ -580,7 +623,7 @@ mod tests {
     #[test]
     fn push_batch_routes_identical_to_sequential_push() -> io::Result<()> {
         let partition_count = 16usize;
-        let buffer_limit = 1024;
+        let buffer_limit = 7;
         let tmp = std::env::temp_dir();
         let mut sequential = PartitionWriters::new(partition_count, Some(&tmp), buffer_limit)?;
         let mut batched = PartitionWriters::new(partition_count, Some(&tmp), buffer_limit)?;
@@ -605,6 +648,7 @@ mod tests {
                 sequential.buffers[pid], batched.buffers[pid],
                 "partition {pid} differs"
             );
+            assert!(batched.buffers[pid].len() < buffer_limit);
         }
 
         Ok(())
@@ -681,12 +725,26 @@ mod tests {
             ShardPlan {
                 first_reference: 0,
                 reference_count: 1,
-                estimated_minimizers: 300_000_000,
+                estimated_minimizers: 1_000_000,
             };
             16
         ];
         assert_eq!(database_build_parallelism(12, &shard_plans), 12);
         assert_eq!(database_build_parallelism(4, &shard_plans), 4);
+    }
+
+    #[test]
+    fn database_build_parallelism_limits_large_shards_by_memory_permits() {
+        let shard_plans: Vec<ShardPlan> = vec![
+            ShardPlan {
+                first_reference: 0,
+                reference_count: 1,
+                estimated_minimizers: 300_000_000,
+            };
+            8
+        ];
+
+        assert_eq!(database_build_parallelism(8, &shard_plans), 1);
     }
 
     #[test]

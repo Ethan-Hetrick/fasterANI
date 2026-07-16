@@ -10,8 +10,9 @@ use std::{
 };
 
 use crate::ani::{
-    align_up, checked_section_end, decompress_to_scratch, emit_progress, is_gzip_path,
-    load_contig_name_sidecar, slice_as_bytes, write_contig_name_sidecar, write_padding,
+    align_up, checked_section_end, contig_sidecar_entry_path, contig_sidecar_filename,
+    decompress_to_scratch, emit_runtime_progress, is_gzip_path, load_contig_name_sidecar,
+    new_contig_sidecar_path, slice_as_bytes, write_contig_name_sidecar, write_padding,
     CachedReferenceMetadata, ContigRecord, MinimizerKey, MmapFile, MmapReferenceContigs,
     MmapReferenceIndex, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
     ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
@@ -31,6 +32,7 @@ impl ReferenceSketch {
         path: &Path,
         kmer_size: usize,
         window_size: usize,
+        minimizer_hash_seed: u32,
         fragment_length: u32,
         min_fragment_length: u32,
         split_n_run: usize,
@@ -59,7 +61,8 @@ impl ReferenceSketch {
 
         let save_start: Instant = Instant::now();
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!(
                     "event=start\tunique_minimizers={}\tcontigs={}\tfiles={}",
@@ -72,7 +75,8 @@ impl ReferenceSketch {
         }
         let keys: Vec<MinimizerKey> = index.keys().copied().collect::<Vec<_>>();
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!("event=keys_collected\tkey_count={}", keys.len()),
                 save_start,
@@ -80,7 +84,8 @@ impl ReferenceSketch {
         }
         let mphf: Mphf<MinimizerKey> = Mphf::new_parallel(runtime_options.mphf_gamma, &keys, None);
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!("event=mphf_built\tkey_count={}", keys.len()),
                 save_start,
@@ -89,7 +94,11 @@ impl ReferenceSketch {
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
         let mut hit_offsets: Vec<u32> = vec![0u32; keys.len()];
         let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];
-        let total_hits: usize = index.values().map(Vec::len).sum::<usize>();
+        let total_hits: usize = index.values().try_fold(0usize, |total, hits| {
+            total.checked_add(hits.len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "sketch hit count exceeds usize")
+            })
+        })?;
         let mut hit_payloads: Vec<SeedHit> = Vec::with_capacity(total_hits);
         let total_reference_minimizers: usize =
             contigs.iter().map(|contig| contig.minimizers.len()).sum();
@@ -112,7 +121,7 @@ impl ReferenceSketch {
             #[cfg(debug_assertions)]
             let estimated_pack_bytes: usize = keys
                 .len()
-                .saturating_mul(size_of::<MinimizerKey>() + size_of::<u64>() + size_of::<u32>())
+                .saturating_mul(size_of::<MinimizerKey>() + size_of::<u32>() + size_of::<u32>())
                 .saturating_add(total_hits.saturating_mul(size_of::<SeedHit>()))
                 .saturating_add(contigs.len().saturating_mul(size_of::<ContigRecord>()))
                 .saturating_add(
@@ -131,7 +140,12 @@ impl ReferenceSketch {
                 keys.len(),
                 reference_minimizer_scratch.path.display()
             );
-            emit_progress("sketch_save", &progress_message, save_start);
+            emit_runtime_progress(
+                runtime_options,
+                "sketch_save",
+                &progress_message,
+                save_start,
+            );
         }
         for (key_index, (key, hits)) in index.iter().enumerate() {
             let slot: usize = mphf.hash(key) as usize;
@@ -146,29 +160,39 @@ impl ReferenceSketch {
                     ),
                 )
             })?;
-            hit_counts[slot] = hits.len() as u32;
+            hit_counts[slot] = u32::try_from(hits.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("minimizer key {key} has more than u32::MAX hits"),
+                )
+            })?;
             hit_payloads.extend_from_slice(hits);
 
             let keys_done: usize = key_index + 1;
-            if keys_done.is_multiple_of(SKETCH_KEY_PACK_PROGRESS_INTERVAL)
-                || keys_done == index.len()
+            if runtime_options.progress_enabled
+                && (keys_done.is_multiple_of(SKETCH_KEY_PACK_PROGRESS_INTERVAL)
+                    || keys_done == index.len())
             {
-                if runtime_options.progress_enabled {
-                    emit_progress(
-                        "sketch_save",
-                        &format!(
-                            "event=pack_index\tkeys_done={keys_done}\tkey_count={}\thits_done={}",
-                            index.len(),
-                            hit_payloads.len()
-                        ),
-                        save_start,
-                    );
-                }
+                emit_runtime_progress(
+                    runtime_options,
+                    "sketch_save",
+                    &format!(
+                        "event=pack_index\tkeys_done={keys_done}\tkey_count={}\thits_done={}",
+                        index.len(),
+                        hit_payloads.len()
+                    ),
+                    save_start,
+                );
             }
         }
 
         for (contig_index, contig) in contigs.iter().enumerate() {
-            let minimizer_offset: u64 = reference_minimizer_count as u64;
+            let minimizer_offset: u64 = u64::try_from(reference_minimizer_count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "reference minimizer offset exceeds u64",
+                )
+            })?;
             let minimizer_count: u32 = u32::try_from(contig.minimizers.len()).map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -188,23 +212,30 @@ impl ReferenceSketch {
                 minimizer_count,
             });
             reference_minimizer_writer.write_all(slice_as_bytes(&contig.minimizers))?;
-            reference_minimizer_count += contig.minimizers.len();
+            reference_minimizer_count = reference_minimizer_count
+                .checked_add(contig.minimizers.len())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "reference minimizer count exceeds usize",
+                    )
+                })?;
 
             let contigs_done: usize = contig_index + 1;
-            if contigs_done.is_multiple_of(crate::ani::SKETCH_CONTIG_PACK_PROGRESS_INTERVAL)
-                || contigs_done == contigs.len()
+            if runtime_options.progress_enabled
+                && (contigs_done.is_multiple_of(crate::ani::SKETCH_CONTIG_PACK_PROGRESS_INTERVAL)
+                    || contigs_done == contigs.len())
             {
-                if runtime_options.progress_enabled {
-                    emit_progress(
-                        "sketch_save",
-                        &format!(
-                            "event=pack_contigs\tcontigs_done={contigs_done}\tcontig_count={}\treference_minimizers_done={}",
-                            contigs.len(),
-                            reference_minimizer_count
-                        ),
-                        save_start,
-                    );
-                }
+                emit_runtime_progress(
+                    runtime_options,
+                    "sketch_save",
+                    &format!(
+                        "event=pack_contigs\tcontigs_done={contigs_done}\tcontig_count={}\treference_minimizers_done={}",
+                        contigs.len(),
+                        reference_minimizer_count
+                    ),
+                    save_start,
+                );
             }
         }
 
@@ -231,17 +262,16 @@ impl ReferenceSketch {
                 ),
             ));
         }
-        write_contig_name_sidecar(
-            path,
-            &files,
-            &contig_names,
-            runtime_options.effective_worker_threads(),
-        )?;
+        let contig_sidecar_path = new_contig_sidecar_path(path, &files, &contig_names)?;
+        let contig_sidecar_file_bytes =
+            write_contig_name_sidecar(&contig_sidecar_path, &files, &contig_names)?;
+        let contig_sidecar_filename = contig_sidecar_filename(&contig_sidecar_path)?;
 
         let metadata: CachedReferenceMetadata = CachedReferenceMetadata {
             version: SKETCH_VERSION,
             k: kmer_size,
             w: window_size,
+            minimizer_hash_seed,
             key_mode: SKETCH_KEY_MODE.to_string(),
             fragment_length,
             min_fragment_length,
@@ -253,6 +283,8 @@ impl ReferenceSketch {
             hit_count: hit_payloads.len(),
             contig_count: contig_records.len(),
             reference_minimizer_count,
+            contig_sidecar_filename,
+            contig_sidecar_file_bytes,
         };
         let metadata_bytes: Vec<u8> = serde_json::to_vec(&metadata).map_err(|err| {
             io::Error::new(
@@ -261,7 +293,8 @@ impl ReferenceSketch {
             )
         })?;
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!(
                     "event=metadata_encoded\tmetadata_bytes={}",
@@ -309,7 +342,7 @@ impl ReferenceSketch {
             path,
             tmp_dir,
             false,
-            runtime_options.effective_worker_threads(),
+            runtime_options.effective_output_threads(),
         )?;
         let mut writer: &mut BufWriter<fs::File> = sketch_output.writer_mut()?;
         writer.write_all(SKETCH_MAGIC)?;
@@ -372,7 +405,8 @@ impl ReferenceSketch {
         io::copy(&mut reference_minimizer_reader, &mut writer)?;
         let output_file_bytes: u64 = sketch_output.finish()?;
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!(
                     "event=complete\tpath={}\tfile_bytes={}",
@@ -396,14 +430,15 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
-            minimizer_hash_seed: _,
+            minimizer_hash_seed,
             fragment_length,
             min_fragment_length,
             split_n_run,
         } = params;
         let load_start: Instant = Instant::now();
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_load",
                 &format!("event=start\tpath={}", path.display()),
                 load_start,
@@ -411,7 +446,8 @@ impl ReferenceSketch {
         }
         let decompressed_sketch: Option<ScratchFile> = if is_gzip_path(path) {
             if runtime_options.progress_enabled {
-                emit_progress(
+                emit_runtime_progress(
+                    runtime_options,
                     "sketch_load",
                     &format!("event=decompress_start\tpath={}", path.display()),
                     load_start,
@@ -440,7 +476,13 @@ impl ReferenceSketch {
 
         let mut metadata_len: [u8; 8] = [0u8; 8];
         file.read_exact(&mut metadata_len)?;
-        let metadata_len: usize = u64::from_le_bytes(metadata_len) as usize;
+        let metadata_len: usize =
+            usize::try_from(u64::from_le_bytes(metadata_len)).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "reference sketch metadata length does not fit this platform",
+                )
+            })?;
         let metadata_start: usize = SKETCH_MAGIC.len() + size_of::<u64>();
         let metadata_end: usize = metadata_start.checked_add(metadata_len).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "metadata length overflow")
@@ -463,7 +505,8 @@ impl ReferenceSketch {
                 )
             })?;
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_load",
                 &format!(
                     "event=metadata_loaded\tfiles={}\tcontigs={}\tkey_count={}\thit_count={}\treference_minimizers={}",
@@ -486,6 +529,7 @@ impl ReferenceSketch {
         if cached.version != SKETCH_VERSION
             || cached.k != kmer_size
             || cached.w != window_size
+            || cached.minimizer_hash_seed != minimizer_hash_seed
             || cached.key_mode != SKETCH_KEY_MODE
             || cached.fragment_length != fragment_length
             || cached.min_fragment_length != min_fragment_length
@@ -494,10 +538,11 @@ impl ReferenceSketch {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "reference sketch cache is incompatible: version={} k={} w={} key_mode={} fragment_length={} min_fragment_length={} split_n_run={}",
+                    "reference sketch cache is incompatible: version={} k={} w={} minimizer_hash_seed={} key_mode={} fragment_length={} min_fragment_length={} split_n_run={}; rebuild the sketch with the requested parameters",
                     cached.version,
                     cached.k,
                     cached.w,
+                    cached.minimizer_hash_seed,
                     cached.key_mode,
                     cached.fragment_length,
                     cached.min_fragment_length,
@@ -546,7 +591,8 @@ impl ReferenceSketch {
         }
 
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_load",
                 &format!(
                     "event=complete\tmmap_bytes={}\tfiles={}\tcontigs={}\tunique_minimizers={}",
@@ -558,21 +604,36 @@ impl ReferenceSketch {
                 load_start,
             );
         }
+        let mmap_contigs = MmapReferenceContigs {
+            mmap: Arc::clone(&mmap),
+            contig_count: cached.contig_count,
+            reference_minimizer_count: cached.reference_minimizer_count,
+            contig_records_offset,
+            reference_minimizers_offset,
+        };
         let contig_names: Option<Vec<ReferenceContigName>> = if load_contig_names {
-            Some(load_contig_name_sidecar(path, cached.contig_count)?)
+            if cached.contig_sidecar_filename.is_empty() || cached.contig_sidecar_file_bytes == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "reference sketch cache has incomplete contig sidecar metadata; rebuild the sketch database",
+                ));
+            }
+            let sidecar_path: std::path::PathBuf =
+                contig_sidecar_entry_path(path, &cached.contig_sidecar_filename)?;
+            Some(load_contig_name_sidecar(
+                &sidecar_path,
+                cached.contig_count,
+                cached.contig_sidecar_file_bytes,
+                &cached.files,
+                mmap_contigs.records(),
+            )?)
         } else {
             None
         };
 
         Ok(Self {
             files: cached.files,
-            contigs: ReferenceContigs::Mmap(MmapReferenceContigs {
-                mmap: Arc::clone(&mmap),
-                contig_count: cached.contig_count,
-                reference_minimizer_count: cached.reference_minimizer_count,
-                contig_records_offset,
-                reference_minimizers_offset,
-            }),
+            contigs: ReferenceContigs::Mmap(mmap_contigs),
             contig_names,
             index: ReferenceIndex::Mphf(MmapReferenceIndex {
                 mphf: cached.mphf,
@@ -584,6 +645,7 @@ impl ReferenceSketch {
                 hit_counts_offset,
                 hit_payloads_offset,
             }),
+            global_frequencies: None,
         })
     }
 
@@ -604,7 +666,7 @@ impl ReferenceSketch {
         let SketchParams {
             kmer_size,
             window_size,
-            minimizer_hash_seed: _,
+            minimizer_hash_seed,
             fragment_length,
             min_fragment_length,
             split_n_run,
@@ -618,13 +680,15 @@ impl ReferenceSketch {
 
         let save_start: Instant = Instant::now();
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!(
-                    "event=start\tmode=streaming\tunique_minimizers={}\tcontigs={}\tfiles={}\ttmp={}",
+                    "event=start\tmode=streaming\tunique_minimizers={}\tcontigs={}\tfiles={}\tartifact={}\ttmp={}",
                     index.len(),
                     contig_records.len(),
                     files.len(),
+                    path.display(),
                     reference_minimizer_scratch.path.display()
                 ),
                 save_start,
@@ -635,15 +699,21 @@ impl ReferenceSketch {
         let mut slot_keys: Vec<MinimizerKey> = vec![0; keys.len()];
         let mut hit_offsets: Vec<u32> = vec![0u32; keys.len()];
         let mut hit_counts: Vec<u32> = vec![0u32; keys.len()];
-        let total_hits: usize = index.values().map(Vec::len).sum::<usize>();
+        let total_hits: usize = index.values().try_fold(0usize, |total, hits| {
+            total.checked_add(hits.len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "shard hit count exceeds usize")
+            })
+        })?;
         let mut hit_payloads: Vec<SeedHit> = Vec::with_capacity(total_hits);
 
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!(
-                    "event=arrays_allocated\tmode=streaming\tkey_count={}\thit_count={total_hits}\treference_minimizers={reference_minimizer_count}",
-                    keys.len()
+                    "event=arrays_allocated\tmode=streaming\tkey_count={}\thit_count={total_hits}\treference_minimizers={reference_minimizer_count}\tartifact={}",
+                    keys.len(),
+                    path.display()
                 ),
                 save_start,
             );
@@ -661,7 +731,14 @@ impl ReferenceSketch {
                     ),
                 )
             })?;
-            hit_counts[slot] = hits.len() as u32;
+            hit_counts[slot] = u32::try_from(hits.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "minimizer key {key} has more than u32::MAX hits; reduce --max-shard-minimizers"
+                    ),
+                )
+            })?;
             hit_payloads.extend_from_slice(hits);
 
             let keys_done: usize = key_index + 1;
@@ -669,12 +746,14 @@ impl ReferenceSketch {
                 || keys_done == index.len())
                 && runtime_options.progress_enabled
             {
-                emit_progress(
-                        "sketch_save",
+                emit_runtime_progress(
+                    runtime_options,
+                    "sketch_save",
                         &format!(
-                            "event=pack_index\tmode=streaming\tkeys_done={keys_done}\tkey_count={}\thits_done={}",
+                            "event=pack_index\tmode=streaming\tkeys_done={keys_done}\tkey_count={}\thits_done={}\tartifact={}",
                             index.len(),
-                            hit_payloads.len()
+                            hit_payloads.len(),
+                            path.display()
                         ),
                         save_start,
                     );
@@ -703,17 +782,16 @@ impl ReferenceSketch {
                 ),
             ));
         }
-        write_contig_name_sidecar(
-            path,
-            &files,
-            &contig_names,
-            runtime_options.effective_worker_threads(),
-        )?;
+        let contig_sidecar_path = new_contig_sidecar_path(path, &files, &contig_names)?;
+        let contig_sidecar_file_bytes =
+            write_contig_name_sidecar(&contig_sidecar_path, &files, &contig_names)?;
+        let contig_sidecar_filename = contig_sidecar_filename(&contig_sidecar_path)?;
 
         let metadata: CachedReferenceMetadata = CachedReferenceMetadata {
             version: SKETCH_VERSION,
             k: kmer_size,
             w: window_size,
+            minimizer_hash_seed,
             key_mode: SKETCH_KEY_MODE.to_string(),
             fragment_length,
             min_fragment_length,
@@ -725,6 +803,8 @@ impl ReferenceSketch {
             hit_count: hit_payloads.len(),
             contig_count: contig_records.len(),
             reference_minimizer_count,
+            contig_sidecar_filename,
+            contig_sidecar_file_bytes,
         };
         let metadata_bytes: Vec<u8> = serde_json::to_vec(&metadata).map_err(|err| {
             io::Error::new(
@@ -743,10 +823,10 @@ impl ReferenceSketch {
         let slot_keys_offset: usize = align_up(metadata_end, 8);
         let hit_offsets_offset: usize = align_up(
             checked_section_end(slot_keys_offset, slot_keys.len(), size_of::<MinimizerKey>())?,
-            align_of::<u64>(),
+            align_of::<u32>(),
         );
         let hit_counts_offset: usize =
-            checked_section_end(hit_offsets_offset, hit_offsets.len(), size_of::<u64>())?;
+            checked_section_end(hit_offsets_offset, hit_offsets.len(), size_of::<u32>())?;
         let hit_payloads_offset: usize = align_up(
             checked_section_end(hit_counts_offset, hit_counts.len(), size_of::<u32>())?,
             align_of::<SeedHit>(),
@@ -772,7 +852,7 @@ impl ReferenceSketch {
             path,
             tmp_dir,
             bgzip,
-            runtime_options.effective_worker_threads(),
+            runtime_options.effective_output_threads(),
         )?;
         let mut writer: &mut BufWriter<fs::File> = sketch_output.writer_mut()?;
         writer.write_all(SKETCH_MAGIC)?;
@@ -822,7 +902,8 @@ impl ReferenceSketch {
         let output_file_bytes: u64 = sketch_output.finish()?;
 
         if runtime_options.progress_enabled {
-            emit_progress(
+            emit_runtime_progress(
+                runtime_options,
                 "sketch_save",
                 &format!(
                     "event=complete\tmode=streaming\tpath={}\tfile_bytes={}",
@@ -839,12 +920,133 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        contig_sidecar_path, ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile,
-        ReferenceHitMap, ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions,
-        SeedHit, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
-        DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
+        new_contig_sidecar_path, slice_as_bytes, write_contig_name_sidecar, ContigRecord,
+        ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
+        ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
+        SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED,
+        DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
     };
-    use std::{env, fs, io, path::PathBuf, time::Instant};
+    use std::{
+        env, fs, io,
+        io::Write,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("fasterani-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn streamed_hash_sketch_round_trips_odd_and_even_keys_and_rejects_seed_mismatch(
+    ) -> io::Result<()> {
+        let params = SketchParams {
+            kmer_size: DEFAULT_KMER_SIZE,
+            window_size: DEFAULT_WINDOW_SIZE,
+            minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
+            fragment_length: DEFAULT_FRAGMENT_LENGTH,
+            min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
+            split_n_run: 0,
+        };
+        let odd_minimizers = vec![
+            ReferenceMinimizer {
+                hash: 11,
+                position: 3,
+            },
+            ReferenceMinimizer {
+                hash: 17,
+                position: 9,
+            },
+            ReferenceMinimizer {
+                hash: 23,
+                position: 15,
+            },
+        ];
+        let mut even_minimizers = odd_minimizers.clone();
+        even_minimizers.push(ReferenceMinimizer {
+            hash: 29,
+            position: 21,
+        });
+
+        for minimizers in [odd_minimizers, even_minimizers] {
+            let mut index: ReferenceHitMap = ReferenceHitMap::default();
+            for minimizer in &minimizers {
+                index.entry(minimizer.hash).or_default().push(SeedHit {
+                    reference_contig_id: 0,
+                    position: minimizer.position,
+                });
+            }
+            assert_eq!(index.len() % 2, minimizers.len() % 2);
+
+            let (reference_minimizer_scratch, mut scratch_file): (ScratchFile, fs::File) =
+                ScratchFile::create(None, "key-parity-reference-minimizers")?;
+            scratch_file.write_all(slice_as_bytes(&minimizers))?;
+            scratch_file.flush()?;
+            drop(scratch_file);
+
+            let directory: PathBuf =
+                unique_test_dir(&format!("{}_key_streamed_hash", minimizers.len()));
+            fs::create_dir_all(&directory)?;
+            let path: PathBuf = directory.join("reference.fasketch");
+            ReferenceSketch::save_streamed_cache(
+                &path,
+                params,
+                vec![ReferenceFile {
+                    path: "ref.fa".to_string(),
+                    mapped_length: u64::from(DEFAULT_FRAGMENT_LENGTH),
+                }],
+                &index,
+                vec![ContigRecord {
+                    minimizer_offset: 0,
+                    file_id: 0,
+                    minimizer_count: u32::try_from(minimizers.len()).expect("small fixture"),
+                }],
+                vec![ReferenceContigName {
+                    file_id: 0,
+                    name: "ref".to_string(),
+                    segment_start: 0,
+                    segment_end: 100,
+                }],
+                minimizers.len(),
+                &reference_minimizer_scratch,
+                None,
+                false,
+                RuntimeOptions::default(),
+            )?;
+
+            let loaded =
+                ReferenceSketch::load(&path, params, true, None, RuntimeOptions::default())?;
+            for minimizer in &minimizers {
+                assert_eq!(
+                    loaded.index.get(&minimizer.hash),
+                    index.get(&minimizer.hash).map(Vec::as_slice)
+                );
+            }
+
+            let mismatched_seed = SketchParams {
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED.wrapping_add(1),
+                ..params
+            };
+            let error = ReferenceSketch::load(
+                &path,
+                mismatched_seed,
+                false,
+                None,
+                RuntimeOptions::default(),
+            )
+            .err()
+            .expect("mismatched minimizer hash seed must be rejected");
+            assert!(error.to_string().contains("minimizer_hash_seed"));
+
+            drop(loaded);
+            fs::remove_dir_all(directory)?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn loaded_sketch_contig_minimizers_match_owned_minimizers() -> io::Result<()> {
@@ -901,17 +1103,17 @@ mod tests {
                 },
             ]),
             index: ReferenceIndex::Hash(index),
+            global_frequencies: None,
         };
-        let path: PathBuf = env::temp_dir().join(format!(
-            "fasterani_mmap_contigs_{}_{}.fasketch",
-            std::process::id(),
-            Instant::now().elapsed().as_nanos()
-        ));
+        let directory: PathBuf = unique_test_dir("mmap-contigs");
+        fs::create_dir_all(&directory)?;
+        let path: PathBuf = directory.join("reference.fasketch");
 
         sketch.save(
             &path,
             DEFAULT_KMER_SIZE,
             DEFAULT_WINDOW_SIZE,
+            DEFAULT_MINIMIZER_HASH_SEED,
             DEFAULT_FRAGMENT_LENGTH,
             DEFAULT_MIN_FRAGMENT_LENGTH,
             0,
@@ -936,9 +1138,6 @@ mod tests {
             loaded.contig_names.as_deref().expect("loaded sidecar");
         assert_eq!(loaded_contig_names[0].name, "ref_contig_a");
         assert_eq!(loaded_contig_names[1].segment_start, 200);
-        fs::remove_file(&path)?;
-        fs::remove_file(contig_sidecar_path(&path))?;
-
         assert_eq!(loaded.files[0].path, "ref.fa");
         assert_eq!(loaded.contigs.len(), contigs.len());
         for (contig_id, contig) in contigs.iter().enumerate() {
@@ -948,7 +1147,117 @@ mod tests {
                 contig.minimizers.as_slice()
             );
         }
+        drop(loaded);
+        fs::remove_dir_all(directory)?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn orphan_sidecar_does_not_change_the_published_sketch_pair() -> io::Result<()> {
+        let sketch: ReferenceSketch = ReferenceSketch {
+            files: vec![ReferenceFile {
+                path: "published.fa".to_string(),
+                mapped_length: 3_000,
+            }],
+            contigs: ReferenceContigs::Owned(vec![ReferenceContig {
+                file_id: 0,
+                minimizers: vec![ReferenceMinimizer {
+                    hash: 11,
+                    position: 7,
+                }],
+            }]),
+            contig_names: Some(vec![ReferenceContigName {
+                file_id: 0,
+                name: "published-contig".to_string(),
+                segment_start: 0,
+                segment_end: 100,
+            }]),
+            index: ReferenceIndex::Hash(ReferenceHitMap::from_iter([(
+                11,
+                vec![SeedHit {
+                    reference_contig_id: 0,
+                    position: 7,
+                }],
+            )])),
+            global_frequencies: None,
+        };
+        let directory: PathBuf = unique_test_dir("orphan-contig-sidecar");
+        fs::create_dir_all(&directory)?;
+        let path: PathBuf = directory.join("reference.fasketch");
+        sketch.save(
+            &path,
+            DEFAULT_KMER_SIZE,
+            DEFAULT_WINDOW_SIZE,
+            DEFAULT_MINIMIZER_HASH_SEED,
+            DEFAULT_FRAGMENT_LENGTH,
+            DEFAULT_MIN_FRAGMENT_LENGTH,
+            0,
+            None,
+            RuntimeOptions::default(),
+        )?;
+
+        let orphan_names = [ReferenceContigName {
+            file_id: 0,
+            name: "unpublished-contig".to_string(),
+            segment_start: 0,
+            segment_end: 100,
+        }];
+        let orphan_path: PathBuf = new_contig_sidecar_path(&path, &sketch.files, &orphan_names)?;
+        write_contig_name_sidecar(&orphan_path, &sketch.files, &orphan_names)?;
+
+        let loaded: ReferenceSketch = ReferenceSketch::load(
+            &path,
+            SketchParams {
+                kmer_size: DEFAULT_KMER_SIZE,
+                window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
+                fragment_length: DEFAULT_FRAGMENT_LENGTH,
+                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
+                split_n_run: 0,
+            },
+            true,
+            None,
+            RuntimeOptions::default(),
+        )?;
+        assert_eq!(
+            loaded.contig_names.as_deref().expect("published sidecar")[0].name,
+            "published-contig"
+        );
+
+        let published_sidecar: PathBuf = fs::read_dir(&directory)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<io::Result<Vec<_>>>()?
+            .into_iter()
+            .find(|candidate| candidate != &path && candidate != &orphan_path)
+            .expect("published sidecar artifact");
+        let mut corrupted_sidecar: Vec<u8> = fs::read(&published_sidecar)?;
+        let name_offset: usize = corrupted_sidecar
+            .windows(b"published-contig".len())
+            .position(|window| window == b"published-contig")
+            .expect("published contig name in sidecar");
+        corrupted_sidecar[name_offset] = b'q';
+        fs::write(&published_sidecar, corrupted_sidecar)?;
+        let error = ReferenceSketch::load(
+            &path,
+            SketchParams {
+                kmer_size: DEFAULT_KMER_SIZE,
+                window_size: DEFAULT_WINDOW_SIZE,
+                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
+                fragment_length: DEFAULT_FRAGMENT_LENGTH,
+                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
+                split_n_run: 0,
+            },
+            true,
+            None,
+            RuntimeOptions::default(),
+        )
+        .err()
+        .expect("a same-size published sidecar mutation must be rejected");
+        assert!(error.to_string().contains("content digest"));
+
+        drop(loaded);
+        fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

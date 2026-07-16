@@ -105,26 +105,29 @@ Output:
         ANI, median_ANI, stddev, MAD, ci_95_upper, ci_95_lower, F99, F80.
 
 Seeding (minimizer sketch; applies to both references and queries):
-  --kmer-size <n>              K-mer size for minimizers (default 16).
-  --window-size <n>            Minimizer window size (default 24).
+  --kmer-size <1..=16>         K-mer size for minimizers (default 16).
+  --window-size <n>            Minimizer window size, >= 1 (default 24).
+  --minimizer-hash-seed <0..=4294967295>
+                               Hash seed for minimizers (default 42).
   --minmer-count <n>           Keep only the n smallest-hash minimizers ('minmers') per query
-                                 fragment for candidate scoring (default behavior uses all).
-  --max-reference-frequency <0..100>
+                                 fragment for candidate scoring; n >= 1
+                                 (default behavior uses all).
+  --max-reference-frequency <0..=100>
                                Ignore reference minimizers occurring in more than this
                                  percent of reference positions; filters out frequent,
                                  uninformative k-mers (default 0).
 
 Fragmenting (how each query contig is cut into fragments):
-  --fragment-length <bp>       Query fragment length (default 3000).
-  --fragment-stride <bp>       Step between fragment starts; <= fragment-length
+  --fragment-length <bp>       Query fragment length, >= 1 (default 3000).
+  --fragment-stride <bp>       Step between fragment starts; 1..=fragment-length
                                  default: equal to fragment-length, i.e. non-overlapping.
-  --min-fragment-length <bp>   Keep trailing fragments at least this long
+  --min-fragment-length <bp>   Keep trailing fragments at least this long; 1..=fragment-length
                                  alias: --min-fraglen; default: fragment-length.
   --split-N <bp>               Split contigs at runs of >= this many ambiguous (N)
                                bases; 0 disables splitting (alias: --split-n; default 0).
 
 Fragment mapping (thresholds applied to each individual fragment alignment):
-  --mash-threshold <0..100>    Drop query fragments whose estimated Mash identity is below
+  --mash-threshold <0..=100>   Drop query fragments whose estimated Mash identity is below
                                  this percent before calculating ANI (default 80).
                                  Use 0 to disable this fragment identity filter.
   --mash-confidence <0..=1>    Confidence interval width for the Mash upper-identity bound
@@ -140,16 +143,17 @@ Fragment mapping (thresholds applied to each individual fragment alignment):
 Sketch database / sharding:
   --bgzip                      Enable if reference sketch input is bgzip-compressed.
   --max-shard-minimizers <n>   Maximum estimated reference minimizers per shard
-                                 default: 500_000_000, producing ~10 GiB shards.
+                                 n >= 1; default: 500_000_000, producing ~10 GiB shards.
   --shards <list>              Comma-separated shard indices and ranges to query,
                                  e.g. 1,3,5-8. Queries all shards when omitted.
                                  Requires --reference-sketch.
   --index-build-mode <mode>    auto | hash | partitioned (default auto).
   --mphf-gamma <float>         MPHF size/build-time tradeoff for saved sketches
-                                 (must be > 1.01; default 10).
+                                 (must be finite and > 1.01; default 10).
 
 Resources:
-  --threads <n>                Worker threads, >= 1 (default 1).
+  --threads <n>                CPU worker limit, >= 1 (default 1). Sharded queries may also use
+                                 one bounded I/O-prefetch thread.
   --tmp <dir>                  Directory for temporary shard files.
   -h, --help                   Show help.
   -v, --version                Show version."
@@ -284,10 +288,10 @@ impl StartupValue {
 }
 
 impl RuntimeStartupOutput {
-    fn emit(&self, args: &CliArgs, sources: &ParameterSources) {
+    fn emit(&self, args: &CliArgs, sources: &ParameterSources, skip_validation: bool) {
         let mut entries: Vec<String> = Vec::new();
 
-        push_toml_string(&mut entries, "params_file", self.params_file.as_ref());
+        push_cli_metadata_string(&mut entries, "params_file", self.params_file.as_ref());
         push_toml_array(&mut entries, "reference_files", &self.reference_files);
         push_toml_array(&mut entries, "reference_lists", &self.reference_lists);
         push_toml_array(&mut entries, "query_files", &self.query_files);
@@ -309,21 +313,26 @@ impl RuntimeStartupOutput {
         );
         push_toml_bool(&mut entries, "bgzip", args.bgzip, sources.bgzip);
         push_toml_bool(&mut entries, "header", args.emit_header, sources.header);
+        push_toml_bool(
+            &mut entries,
+            "per_contig",
+            args.per_contig,
+            sources.per_contig,
+        );
         push_toml_bool(&mut entries, "verbose", args.verbose, sources.verbose);
+        push_toml_bool(&mut entries, "quiet", args.quiet, sources.quiet);
+        push_toml_bool(&mut entries, "force", args.force, sources.force);
+        entries.push(format!(
+            "# skip_validation = {skip_validation}  (CLI-only metadata)"
+        ));
 
-        if sources.threads.is_some() && args.threads != 1 {
-            push_toml_number(&mut entries, "threads", args.threads, sources.threads);
-        }
-        if sources.freq_threshold_percent.is_some()
-            && args.freq_threshold_percent != DEFAULT_FREQ_THRESHOLD_PERCENT
-        {
-            push_toml_number(
-                &mut entries,
-                "freq_threshold_percent",
-                args.freq_threshold_percent,
-                sources.freq_threshold_percent,
-            );
-        }
+        push_toml_number(&mut entries, "threads", args.threads, sources.threads);
+        push_toml_number(
+            &mut entries,
+            "freq_threshold_percent",
+            args.freq_threshold_percent,
+            sources.freq_threshold_percent,
+        );
         if let Some(minmer_count) = args.minmer_count {
             push_toml_number(
                 &mut entries,
@@ -332,93 +341,72 @@ impl RuntimeStartupOutput {
                 sources.minmer_count,
             );
         }
-        if sources.kmer_size.is_some() && args.kmer_size != DEFAULT_KMER_SIZE {
-            push_toml_number(&mut entries, "kmer_size", args.kmer_size, sources.kmer_size);
-        }
-        if sources.window_size.is_some() && args.window_size != DEFAULT_WINDOW_SIZE {
-            push_toml_number(
-                &mut entries,
-                "window_size",
-                args.window_size,
-                sources.window_size,
-            );
-        }
-        if sources.fragment_length.is_some() && args.fragment_length != DEFAULT_FRAGMENT_LENGTH {
-            push_toml_number(
-                &mut entries,
-                "fragment_length",
-                args.fragment_length,
-                sources.fragment_length,
-            );
-        }
-        if sources.fragment_stride.is_some() && args.fragment_stride != args.fragment_length {
-            push_toml_number(
-                &mut entries,
-                "fragment_stride",
-                args.fragment_stride,
-                sources.fragment_stride,
-            );
-        }
-        if sources.min_fragment_length.is_some() && args.min_fragment_length != args.fragment_length
-        {
-            push_toml_number(
-                &mut entries,
-                "min_fragment_length",
-                args.min_fragment_length,
-                sources.min_fragment_length,
-            );
-        }
-        if sources.mash_threshold.is_some() && args.mash_threshold != DEFAULT_MIN_PERCENT_IDENTITY {
-            push_toml_number(
-                &mut entries,
-                "mash_threshold",
-                args.mash_threshold,
-                sources.mash_threshold,
-            );
-        }
-        if sources.mash_confidence.is_some() && args.mash_confidence != DEFAULT_MASH_CONFIDENCE {
-            push_toml_number(
-                &mut entries,
-                "mash_confidence",
-                args.mash_confidence,
-                sources.mash_confidence,
-            );
-        }
-        if sources.mphf_gamma.is_some() && args.mphf_gamma != DEFAULT_MPHF_GAMMA {
-            push_toml_number(
-                &mut entries,
-                "mphf_gamma",
-                args.mphf_gamma,
-                sources.mphf_gamma,
-            );
-        }
-        if sources.split_n_run.is_some() && args.split_n_run != DEFAULT_SPLIT_N_RUN {
-            push_toml_number(
-                &mut entries,
-                "split_n_run",
-                args.split_n_run,
-                sources.split_n_run,
-            );
-        }
-        if sources.max_shard_minimizers.is_some()
-            && args.max_shard_minimizers != DEFAULT_MAX_SHARD_MINIMIZERS
-        {
-            push_toml_number(
-                &mut entries,
-                "max_shard_minimizers",
-                args.max_shard_minimizers,
-                sources.max_shard_minimizers,
-            );
-        }
-        if let Some(source) = sources.index_build_mode {
-            if args.index_build_mode != IndexBuildMode::Auto {
-                push_toml_string(
-                    &mut entries,
-                    "index_build_mode",
-                    Some(&StartupValue::new(args.index_build_mode.name(), source)),
-                );
-            }
-        }
+        push_toml_number(&mut entries, "kmer_size", args.kmer_size, sources.kmer_size);
+        push_toml_number(
+            &mut entries,
+            "window_size",
+            args.window_size,
+            sources.window_size,
+        );
+        push_toml_number(
+            &mut entries,
+            "minimizer_hash_seed",
+            args.minimizer_hash_seed,
+            sources.minimizer_hash_seed,
+        );
+        push_toml_number(
+            &mut entries,
+            "fragment_length",
+            args.fragment_length,
+            sources.fragment_length,
+        );
+        push_toml_number(
+            &mut entries,
+            "fragment_stride",
+            args.fragment_stride,
+            sources.fragment_stride,
+        );
+        push_toml_number(
+            &mut entries,
+            "min_fragment_length",
+            args.min_fragment_length,
+            sources.min_fragment_length,
+        );
+        push_toml_number(
+            &mut entries,
+            "mash_threshold",
+            args.mash_threshold,
+            sources.mash_threshold,
+        );
+        push_toml_number(
+            &mut entries,
+            "mash_confidence",
+            args.mash_confidence,
+            sources.mash_confidence,
+        );
+        push_toml_number(
+            &mut entries,
+            "mphf_gamma",
+            args.mphf_gamma,
+            sources.mphf_gamma,
+        );
+        push_toml_number(
+            &mut entries,
+            "split_n_run",
+            args.split_n_run,
+            sources.split_n_run,
+        );
+        push_toml_number(
+            &mut entries,
+            "max_shard_minimizers",
+            args.max_shard_minimizers,
+            sources.max_shard_minimizers,
+        );
+        entries.push(format!(
+            "index_build_mode = \"{}\"{}",
+            args.index_build_mode.name(),
+            source_comment(sources.index_build_mode)
+        ));
         if let Some(filter) = &args.shard_filter {
             let mut sorted: Vec<usize> = filter.iter().copied().collect();
             sorted.sort_unstable();
@@ -427,17 +415,13 @@ impl RuntimeStartupOutput {
                 .map(std::string::ToString::to_string)
                 .collect();
             entries.push(format!(
-                "shards = [{}]{}",
-                rendered.join(", "),
+                "shards = \"{}\"{}",
+                rendered.join(","),
                 source_comment(sources.shards)
             ));
         }
 
-        if entries.is_empty() {
-            return;
-        }
-
-        eprintln!("################# FasterANI non-default runtime parameters #################");
+        eprintln!("################## FasterANI effective runtime parameters ##################");
         for entry in entries {
             eprintln!("{entry}");
         }
@@ -447,12 +431,12 @@ impl RuntimeStartupOutput {
 
 #[derive(Default)]
 struct ParameterSources {
-    params_file: Option<ParameterSource>,
     threads: Option<ParameterSource>,
     freq_threshold_percent: Option<ParameterSource>,
     minmer_count: Option<ParameterSource>,
     kmer_size: Option<ParameterSource>,
     window_size: Option<ParameterSource>,
+    minimizer_hash_seed: Option<ParameterSource>,
     fragment_length: Option<ParameterSource>,
     fragment_stride: Option<ParameterSource>,
     min_fragment_length: Option<ParameterSource>,
@@ -469,8 +453,10 @@ struct ParameterSources {
     mapping_stats: Option<ParameterSource>,
     bgzip: Option<ParameterSource>,
     header: Option<ParameterSource>,
+    per_contig: Option<ParameterSource>,
     verbose: Option<ParameterSource>,
     quiet: Option<ParameterSource>,
+    force: Option<ParameterSource>,
 }
 
 fn push_toml_array(entries: &mut Vec<String>, key: &str, values: &[StartupValue]) {
@@ -516,15 +502,24 @@ fn push_toml_string(entries: &mut Vec<String>, key: &str, value: Option<&Startup
     ));
 }
 
+fn push_cli_metadata_string(entries: &mut Vec<String>, key: &str, value: Option<&StartupValue>) {
+    let Some(value) = value else {
+        return;
+    };
+    entries.push(format!(
+        "# {key} = \"{}\"  ({}; CLI-only metadata)",
+        toml_escape(&value.value),
+        value.source.label()
+    ));
+}
+
 fn push_toml_bool(
     entries: &mut Vec<String>,
     key: &str,
     value: bool,
     source: Option<ParameterSource>,
 ) {
-    if value {
-        entries.push(format!("{key} = true{}", source_comment(source)));
-    }
+    entries.push(format!("{key} = {value}{}", source_comment(source)));
 }
 
 fn push_toml_number(
@@ -791,6 +786,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     let mut startup_output = RuntimeStartupOutput::default();
     let mut sources = ParameterSources::default();
     let mut stdin_query_name: Option<String> = None;
+    let mut cli_query_name_seen: bool = false;
     let mut sketch_path: Option<PathBuf> = None;
     let mut tmp_dir: Option<PathBuf> = None;
     let mut out_path: Option<PathBuf> = None;
@@ -826,7 +822,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             absolute_path.to_string_lossy(),
             ParameterSource::Cli,
         ));
-        sources.params_file = Some(ParameterSource::Cli);
     }
 
     let params_file_base_dir = params_file_base_dir.as_deref();
@@ -910,6 +905,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         emit_header = value;
         sources.header = Some(ParameterSource::ParamsFile);
     }
+    if let Some(value) = params_file_config.per_contig {
+        per_contig = value;
+        sources.per_contig = Some(ParameterSource::ParamsFile);
+    }
     if let Some(value) = params_file_config.verbose {
         verbose = value;
         sources.verbose = Some(ParameterSource::ParamsFile);
@@ -920,6 +919,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     }
     if let Some(value) = params_file_config.force {
         force = value;
+        sources.force = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.threads {
         threads = value;
@@ -940,6 +940,10 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     if let Some(value) = params_file_config.window_size {
         window_size = value;
         sources.window_size = Some(ParameterSource::ParamsFile);
+    }
+    if let Some(value) = params_file_config.minimizer_hash_seed {
+        minimizer_hash_seed = value;
+        sources.minimizer_hash_seed = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.fragment_length {
         fragment_length = value;
@@ -1026,12 +1030,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query requires a path")
                 })?;
-                if !is_stdin_path(&value) && stdin_query_name.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--query-name may only be used with `--query -`",
-                    ));
-                }
                 add_query_file(
                     &value,
                     ParameterSource::Cli,
@@ -1045,12 +1043,13 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--query-name requires a value")
                 })?;
-                if stdin_query_name.is_some() {
+                if cli_query_name_seen {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "--query-name may only be supplied once",
                     ));
                 }
+                cli_query_name_seen = true;
                 startup_output.query_name =
                     Some(StartupValue::new(value.clone(), ParameterSource::Cli));
                 stdin_query_name = Some(value);
@@ -1071,6 +1070,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             "--skip-validation" => {}
             "--per-contig" => {
                 per_contig = true;
+                sources.per_contig = Some(ParameterSource::Cli);
             }
             "--reference-sketch" => {
                 let value = args.next().ok_or_else(|| {
@@ -1132,6 +1132,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
                         format!("invalid --minimizer-hash-seed value {value:?}: {err}"),
                     )
                 })?;
+                sources.minimizer_hash_seed = Some(ParameterSource::Cli);
             }
             "--fragment-length" => {
                 let value = args.next().ok_or_else(|| {
@@ -1382,6 +1383,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             }
             "--force" => {
                 force = true;
+                sources.force = Some(ParameterSource::Cli);
             }
             "--help" | "-h" | "--h" | "help" | "-?" => {
                 eprintln!("{}", usage());
@@ -1411,7 +1413,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "missing --query (omit queries when using --sketch for build-only mode)\n{}",
+                "missing --query (omit queries when using --reference-sketch for build-only mode)\n{}",
                 usage()
             ),
         ));
@@ -1431,17 +1433,6 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             io::ErrorKind::InvalidInput,
             "Reference sketch exists and no query was provided, but no references were provided for overwrite. Add --reference or --reference-list with --force.",
         ));
-    }
-
-    if stdin_query_name.is_some() {
-        let label: String = stdin_query_name.take().expect("checked above");
-        let Some(query) = queries.iter_mut().find(|query| is_stdin_path(&query.open)) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--query-name requires `--query -`",
-            ));
-        };
-        query.label = label;
     }
 
     let stdin_reference_count: usize = references
@@ -1469,6 +1460,15 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
             io::ErrorKind::InvalidInput,
             "reference and query cannot both be read from stdin in one run",
         ));
+    }
+    if let Some(label) = stdin_query_name.take() {
+        let Some(query) = queries.iter_mut().find(|query| is_stdin_path(&query.open)) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--query-name requires `--query -`",
+            ));
+        };
+        query.label = label;
     }
 
     if threads == 0 {
@@ -1566,7 +1566,7 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
         force,
     };
     if !cli_args.quiet {
-        startup_output.emit(&cli_args, &sources);
+        startup_output.emit(&cli_args, &sources, skip_validation);
     }
 
     Ok(Some(cli_args))

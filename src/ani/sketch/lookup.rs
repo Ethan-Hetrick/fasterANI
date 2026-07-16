@@ -7,6 +7,22 @@ use crate::ani::{
 };
 
 impl ReferenceSketch {
+    fn database_frequency(&self, minimizer: &MinimizerKey, local_count: usize) -> usize {
+        let Some(global_frequencies) = self.global_frequencies.as_ref() else {
+            return local_count;
+        };
+        match global_frequencies.get(*minimizer) {
+            Some(global_count) => global_count,
+            None => {
+                debug_assert!(
+                    false,
+                    "global-frequency artifact is missing a key present in a sketch shard"
+                );
+                local_count
+            }
+        }
+    }
+
     /// Collect and merge seed-hit candidate intervals for one query fragment.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn find_candidate_regions(
@@ -33,12 +49,17 @@ impl ReferenceSketch {
             // Hash index path has no slot ordering; fall back to direct lookup.
             for minimizer in query_minimizers {
                 let hits: Option<&[SeedHit]> = self.index.get(minimizer);
+                let database_frequency: Option<usize> = hits
+                    .map(<[SeedHit]>::len)
+                    .map(|count| self.database_frequency(minimizer, count));
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
-                    metrics.record_seed_lookup(hits.map(<[SeedHit]>::len), frequency_threshold);
+                    metrics.record_seed_lookup(database_frequency, frequency_threshold);
                 }
                 if let Some(hits) = hits {
-                    if hits.len() < frequency_threshold {
+                    if database_frequency.expect("present hits have a frequency")
+                        < frequency_threshold
+                    {
                         seed_hits.extend_from_slice(hits);
                     }
                 }
@@ -49,13 +70,17 @@ impl ReferenceSketch {
             let mut accepted_hit_count: usize = 0;
             for &(slot, minimizer) in slot_sorted_minimizers.iter() {
                 let hit_range = self.index.hit_range_by_slot(slot as usize, &minimizer);
+                let database_frequency: Option<usize> = hit_range
+                    .map(|(_, count)| count)
+                    .map(|count| self.database_frequency(&minimizer, count));
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
-                    metrics
-                        .record_seed_lookup(hit_range.map(|(_, count)| count), frequency_threshold);
+                    metrics.record_seed_lookup(database_frequency, frequency_threshold);
                 }
                 if let Some((offset, count)) = hit_range {
-                    if count < frequency_threshold {
+                    if database_frequency.expect("present hit range has a frequency")
+                        < frequency_threshold
+                    {
                         hit_ranges.push((offset, count));
                         accepted_hit_count = accepted_hit_count.saturating_add(count);
                     }

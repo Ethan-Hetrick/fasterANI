@@ -313,6 +313,54 @@ pub(crate) fn canonical_minimizers_with_positions(
         .minimizers_with_positions
 }
 
+/// Return canonical minimizers together with the first window start at which
+/// each deduplicated minimizer was selected. This clean-sequence variant is
+/// used to split a long contig into independently computable window ranges.
+pub(crate) fn canonical_minimizers_with_super_kmers(
+    sequence: &[u8],
+    kmer_size: usize,
+    window_size: usize,
+    minimizer_hash_seed: u32,
+) -> Vec<(MinimizerKey, u32, u32)> {
+    if sequence.len() < kmer_size + window_size.saturating_sub(1) {
+        return Vec::new();
+    }
+    debug_assert!(
+        !sequence.iter().any(|base| matches!(base, b'N' | b'n')),
+        "chunked minimizer extraction requires an unambiguous sequence"
+    );
+
+    let packed_sequence: PackedNSeqVec = PackedNSeqVec::from_ascii(sequence);
+    let packed_sequence_slice = packed_sequence.as_slice();
+    let sequence_slice = packed_sequence_slice.seq;
+    let hasher: NtHasher<true> = NtHasher::<true>::new_with_seed(kmer_size, minimizer_hash_seed);
+    let mut minimizer_positions: Vec<u32> = Vec::new();
+    let mut super_kmer_starts: Vec<u32> = Vec::new();
+    let _ = canonical_minimizers(kmer_size, window_size)
+        .hasher(&hasher)
+        .super_kmers(&mut super_kmer_starts)
+        .run(sequence_slice, &mut minimizer_positions);
+    debug_assert_eq!(minimizer_positions.len(), super_kmer_starts.len());
+
+    minimizer_positions
+        .into_iter()
+        .zip(super_kmer_starts)
+        .filter_map(|(position, super_kmer_start)| {
+            let pos: usize = position as usize;
+            let forward_kmer = sequence_slice.read_kmer(kmer_size, pos);
+            let reverse_complement_kmer = sequence_slice.read_revcomp_kmer(kmer_size, pos);
+            if forward_kmer == reverse_complement_kmer {
+                return None;
+            }
+
+            let canonical_kmer: u64 = forward_kmer.min(reverse_complement_kmer);
+            let key: MinimizerKey = MinimizerKey::try_from(canonical_kmer)
+                .expect("u32 2-bit minimizer keys require k <= 16");
+            Some((key, position, super_kmer_start))
+        })
+        .collect()
+}
+
 fn is_all_n_sequence(sequence: &[u8]) -> bool {
     !sequence.is_empty() && sequence.iter().all(|base| matches!(base, b'N' | b'n'))
 }
