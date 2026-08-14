@@ -30,7 +30,6 @@ dhat = { version = "0.3", optional = true }
 
 [dev-dependencies]
 iai-callgrind = "0.8.0"
-cargo-show-asm = "0.2.62"
 criterion = "0.8.2"
 
 [features]
