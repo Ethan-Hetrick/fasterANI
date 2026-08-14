@@ -666,7 +666,11 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
     let f99: f64 = fraction_at_or_above(fragment_identities, 99.0);
     let f80: f64 = fraction_at_or_below(fragment_identities, 80.0);
 
-    let mean: f64 = fragment_identities.iter().sum::<f64>() / count as f64;
+    let mean: f64 = fragment_identities
+        .iter()
+        .copied()
+        .fold(0.0_f64, |sum, identity| sum.algebraic_add(identity))
+        / count as f64;
     if count == 1 {
         return AniDistributionStats {
             median,
@@ -683,11 +687,14 @@ pub(crate) fn compute_distribution_stats(fragment_identities: &[f64]) -> AniDist
 
     let variance: f64 = fragment_identities
         .iter()
+        .copied()
         .map(|identity| {
-            let delta: f64 = identity - mean;
-            delta * delta
+            let delta: f64 = identity.algebraic_sub(mean);
+            delta.algebraic_mul(delta)
         })
-        .sum::<f64>()
+        .fold(0.0_f64, |sum, squared_delta| {
+            sum.algebraic_add(squared_delta)
+        })
         / (count - 1) as f64;
     let stddev: f64 = variance.sqrt();
     let standard_error: f64 = stddev / (count as f64).sqrt();
