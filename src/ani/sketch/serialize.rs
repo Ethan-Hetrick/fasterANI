@@ -10,12 +10,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gzp::{deflate::Bgzf, ZBuilder};
-
 use crate::ani::{
-    append_path_suffix, compress_file_to_bgzf, gzp_error_to_io, is_gzip_path, read_text_maybe_gzip,
-    ContigRecord, FastaInput, ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
+    append_path_suffix, compress_file_to_bgzf, sketch_reference_name, FastaInput, MmapFile,
+    ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
 };
+
+const NAME_SIDECAR_MAGIC: [u8; 8] = *b"FANINAM\0";
+const NAME_SIDECAR_VERSION: u32 = 2;
+const NAME_SIDECAR_HEADER_BYTES: usize = 72;
+const NAME_SIDECAR_GENOME_RECORD_BYTES: usize = 32;
+const NAME_SIDECAR_CONTIG_RECORD_BYTES: usize = 24;
 
 pub(crate) struct SketchOutput {
     pub(crate) final_path: PathBuf,
@@ -162,13 +166,8 @@ impl Drop for SketchOutput {
         }
     }
 }
-
-fn content_addressed_contig_sidecar_path(sketch_path: &Path, content_id: &str) -> PathBuf {
-    let filename: String = if is_gzip_path(sketch_path) {
-        format!("fasterani-contigs.{content_id}.tsv.bgz")
-    } else {
-        format!("fasterani-contigs.{content_id}.tsv")
-    };
+fn content_addressed_name_sidecar_path(sketch_path: &Path, content_id: &str) -> PathBuf {
+    let filename = format!("fasterani-names.{content_id}.bin");
     sketch_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -203,72 +202,449 @@ impl Write for Fnv128Writer {
     }
 }
 
-fn write_contig_name_records(
-    writer: &mut dyn Write,
-    files: &[ReferenceFile],
-    contig_names: &[ReferenceContigName],
-) -> io::Result<()> {
-    writeln!(
-        writer,
-        "contig_id\treference_file_id\treference_file\treference_contig\tsegment_start\tsegment_end"
-    )?;
-
-    for (contig_id, contig) in contig_names.iter().enumerate() {
-        let reference_file: &str = files
-            .get(contig.file_id)
-            .map_or("unknown", |file| file.path.as_str());
-        writeln!(
-            writer,
-            "{contig_id}\t{}\t{}\t{}\t{}\t{}",
-            contig.file_id,
-            tsv_field(reference_file),
-            tsv_field(&contig.name),
-            contig.segment_start,
-            contig.segment_end
-        )?;
-    }
-
-    Ok(())
+fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn new_contig_sidecar_path(
+fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn name_blob_record(blob: &mut Vec<u8>, name: &str) -> io::Result<(u64, u32)> {
+    let offset = u64::try_from(blob.len()).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("name sidecar blob offset exceeds u64: {err}"),
+        )
+    })?;
+    let length = u32::try_from(name.len()).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("name sidecar entry exceeds u32 bytes: {err}"),
+        )
+    })?;
+    blob.extend_from_slice(name.as_bytes());
+    Ok((offset, length))
+}
+
+fn build_name_sidecar_bytes(
+    files: &[ReferenceFile],
+    contig_names: &[ReferenceContigName],
+) -> io::Result<Vec<u8>> {
+    let mut blob = Vec::new();
+    let mut genome_records = Vec::with_capacity(files.len());
+    for file in files {
+        let saved_name = sketch_reference_name(&file.path);
+        let (name_offset, name_length) = name_blob_record(&mut blob, &saved_name)?;
+        genome_records.push((
+            name_offset,
+            name_length,
+            file.original_length,
+            file.mapped_length,
+        ));
+    }
+    let mut contig_records = Vec::with_capacity(contig_names.len());
+    for contig in contig_names {
+        let (name_offset, name_length) = name_blob_record(&mut blob, &contig.name)?;
+        let file_id = u32::try_from(contig.file_id).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("contig file id exceeds u32: {err}"),
+            )
+        })?;
+        contig_records.push((
+            name_offset,
+            name_length,
+            file_id,
+            contig.segment_start,
+            contig.segment_end,
+        ));
+    }
+
+    let genome_index_offset = NAME_SIDECAR_HEADER_BYTES;
+    let contig_index_offset = genome_index_offset
+        .checked_add(
+            genome_records
+                .len()
+                .checked_mul(NAME_SIDECAR_GENOME_RECORD_BYTES)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "name sidecar genome index overflow",
+                    )
+                })?,
+        )
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "name sidecar offset overflow")
+        })?;
+    let blob_offset = contig_index_offset
+        .checked_add(
+            contig_records
+                .len()
+                .checked_mul(NAME_SIDECAR_CONTIG_RECORD_BYTES)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "name sidecar contig index overflow",
+                    )
+                })?,
+        )
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "name sidecar offset overflow")
+        })?;
+    let file_size = blob_offset
+        .checked_add(blob.len())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "name sidecar size overflow"))?;
+
+    let mut bytes = Vec::with_capacity(file_size);
+    bytes.extend_from_slice(&NAME_SIDECAR_MAGIC);
+    push_u32(&mut bytes, NAME_SIDECAR_VERSION);
+    push_u32(&mut bytes, NAME_SIDECAR_HEADER_BYTES as u32);
+    push_u64(&mut bytes, genome_records.len() as u64);
+    push_u64(&mut bytes, contig_records.len() as u64);
+    push_u64(&mut bytes, genome_index_offset as u64);
+    push_u64(&mut bytes, contig_index_offset as u64);
+    push_u64(&mut bytes, blob_offset as u64);
+    push_u64(&mut bytes, blob.len() as u64);
+    push_u64(&mut bytes, file_size as u64);
+    debug_assert_eq!(bytes.len(), NAME_SIDECAR_HEADER_BYTES);
+    for (name_offset, name_length, original_length, mapped_length) in genome_records {
+        push_u64(&mut bytes, name_offset);
+        push_u32(&mut bytes, name_length);
+        push_u32(&mut bytes, 0);
+        push_u64(&mut bytes, original_length);
+        push_u64(&mut bytes, mapped_length);
+    }
+    for (name_offset, name_length, file_id, segment_start, segment_end) in contig_records {
+        push_u64(&mut bytes, name_offset);
+        push_u32(&mut bytes, name_length);
+        push_u32(&mut bytes, file_id);
+        push_u32(&mut bytes, segment_start);
+        push_u32(&mut bytes, segment_end);
+    }
+    bytes.extend_from_slice(&blob);
+    Ok(bytes)
+}
+
+pub(crate) fn write_name_sidecar(
     sketch_path: &Path,
     files: &[ReferenceFile],
     contig_names: &[ReferenceContigName],
-) -> io::Result<PathBuf> {
+) -> io::Result<(String, u64)> {
+    let bytes = build_name_sidecar_bytes(files, contig_names)?;
     let mut digest = Fnv128Writer::default();
-    write_contig_name_records(&mut digest, files, contig_names)?;
-    Ok(content_addressed_contig_sidecar_path(
-        sketch_path,
-        &format!("{:032x}", digest.state),
-    ))
-}
-
-pub(crate) fn contig_sidecar_filename(sidecar_path: &Path) -> io::Result<String> {
-    sidecar_path.file_name().map_or_else(
-        || {
-            Err(io::Error::new(
+    digest.write_all(&bytes)?;
+    let path = content_addressed_name_sidecar_path(sketch_path, &format!("{:032x}", digest.state));
+    let (temp_path, mut file) = create_sibling_temp_file(&path)?;
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.flush()?;
+        drop(file);
+        publish_immutable_temp_file(&temp_path, &path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result?;
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "contig sidecar path {} has no filename",
-                    sidecar_path.display()
-                ),
-            ))
-        },
-        |name| Ok(name.to_string_lossy().into_owned()),
-    )
+                "name sidecar path has no filename",
+            )
+        })?;
+    Ok((filename, bytes.len() as u64))
 }
 
-pub(crate) fn contig_sidecar_entry_path(sketch_path: &Path, filename: &str) -> io::Result<PathBuf> {
-    let filename_path: PathBuf = PathBuf::from(filename);
+#[cfg_attr(not(test), allow(dead_code))]
+fn read_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
+    let raw: [u8; 4] = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "truncated name sidecar"))?
+        .try_into()
+        .expect("four-byte slice");
+    Ok(u32::from_le_bytes(raw))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn read_u64(bytes: &[u8], offset: usize) -> io::Result<u64> {
+    let raw: [u8; 8] = bytes
+        .get(offset..offset + 8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "truncated name sidecar"))?
+        .try_into()
+        .expect("eight-byte slice");
+    Ok(u64::from_le_bytes(raw))
+}
+
+/// Experimental allocation-free reader for an indexed reference-name sidecar.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct NameSidecar {
+    mmap: MmapFile,
+    genome_count: usize,
+    contig_count: usize,
+    genome_index_offset: usize,
+    contig_index_offset: usize,
+    blob_offset: usize,
+    blob_len: usize,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl NameSidecar {
+    pub(crate) fn open(path: &Path, expected_file_bytes: u64) -> io::Result<Self> {
+        let mmap = MmapFile::open(path)?;
+        let bytes = mmap.as_slice();
+        if expected_file_bytes != 0 && expected_file_bytes != bytes.len() as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar byte count mismatch",
+            ));
+        }
+        if bytes.get(..8) != Some(NAME_SIDECAR_MAGIC.as_slice()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid name sidecar magic",
+            ));
+        }
+        if read_u32(bytes, 8)? != NAME_SIDECAR_VERSION
+            || read_u32(bytes, 12)? as usize != NAME_SIDECAR_HEADER_BYTES
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported name sidecar format",
+            ));
+        }
+        let genome_count = usize::try_from(read_u64(bytes, 16)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar genome count exceeds usize",
+            )
+        })?;
+        let contig_count = usize::try_from(read_u64(bytes, 24)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar contig count exceeds usize",
+            )
+        })?;
+        let genome_index_offset = usize::try_from(read_u64(bytes, 32)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar offset exceeds usize",
+            )
+        })?;
+        let contig_index_offset = usize::try_from(read_u64(bytes, 40)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar offset exceeds usize",
+            )
+        })?;
+        let blob_offset = usize::try_from(read_u64(bytes, 48)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar offset exceeds usize",
+            )
+        })?;
+        let blob_len = usize::try_from(read_u64(bytes, 56)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar blob length exceeds usize",
+            )
+        })?;
+        let declared_size = usize::try_from(read_u64(bytes, 64)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar size exceeds usize",
+            )
+        })?;
+        let expected_contig_offset = NAME_SIDECAR_HEADER_BYTES
+            .checked_add(
+                genome_count
+                    .checked_mul(NAME_SIDECAR_GENOME_RECORD_BYTES)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "name sidecar index overflow")
+                    })?,
+            )
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "name sidecar index overflow")
+            })?;
+        let expected_blob_offset = expected_contig_offset
+            .checked_add(
+                contig_count
+                    .checked_mul(NAME_SIDECAR_CONTIG_RECORD_BYTES)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "name sidecar index overflow")
+                    })?,
+            )
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "name sidecar index overflow")
+            })?;
+        if genome_index_offset != NAME_SIDECAR_HEADER_BYTES
+            || contig_index_offset != expected_contig_offset
+            || blob_offset != expected_blob_offset
+            || blob_offset.checked_add(blob_len) != Some(bytes.len())
+            || declared_size != bytes.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid name sidecar section layout",
+            ));
+        }
+        let reader = Self {
+            mmap,
+            genome_count,
+            contig_count,
+            genome_index_offset,
+            contig_index_offset,
+            blob_offset,
+            blob_len,
+        };
+        for id in 0..reader.genome_count {
+            reader.genome_name(id)?;
+        }
+        for id in 0..reader.contig_count {
+            reader.contig_name(id)?;
+            if reader.contig_file_id(id)? >= reader.genome_count {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "name sidecar contig references a missing genome",
+                ));
+            }
+            let (start, end) = reader.contig_segment(id)?;
+            if start > end {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "name sidecar contig segment is inverted",
+                ));
+            }
+        }
+        let mut digest = Fnv128Writer::default();
+        digest.write_all(reader.mmap.as_slice())?;
+        let expected_path =
+            content_addressed_name_sidecar_path(path, &format!("{:032x}", digest.state));
+        if expected_path.file_name() != path.file_name() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar does not match its content digest",
+            ));
+        }
+        Ok(reader)
+    }
+
+    pub(crate) fn genome_count(&self) -> usize {
+        self.genome_count
+    }
+    pub(crate) fn contig_count(&self) -> usize {
+        self.contig_count
+    }
+
+    fn name_at(&self, record_offset: usize) -> io::Result<&str> {
+        let offset = usize::try_from(read_u64(self.mmap.as_slice(), record_offset)?)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "name offset exceeds usize"))?;
+        let len = read_u32(self.mmap.as_slice(), record_offset + 8)? as usize;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "name range overflow"))?;
+        if end > self.blob_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name extends past sidecar blob",
+            ));
+        }
+        std::str::from_utf8(
+            &self.mmap.as_slice()[self.blob_offset + offset..self.blob_offset + end],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid UTF-8 in name sidecar: {err}"),
+            )
+        })
+    }
+
+    pub(crate) fn genome_name(&self, file_id: usize) -> io::Result<&str> {
+        if file_id >= self.genome_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "genome id out of range",
+            ));
+        }
+        self.name_at(self.genome_index_offset + file_id * NAME_SIDECAR_GENOME_RECORD_BYTES)
+    }
+
+    pub(crate) fn genome_length(&self, file_id: usize) -> io::Result<u64> {
+        if file_id >= self.genome_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "genome id out of range",
+            ));
+        }
+        read_u64(
+            self.mmap.as_slice(),
+            self.genome_index_offset + file_id * NAME_SIDECAR_GENOME_RECORD_BYTES + 16,
+        )
+    }
+
+    pub(crate) fn genome_mapped_length(&self, file_id: usize) -> io::Result<u64> {
+        if file_id >= self.genome_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "genome id out of range",
+            ));
+        }
+        read_u64(
+            self.mmap.as_slice(),
+            self.genome_index_offset + file_id * NAME_SIDECAR_GENOME_RECORD_BYTES + 24,
+        )
+    }
+
+    pub(crate) fn contig_name(&self, contig_id: usize) -> io::Result<&str> {
+        if contig_id >= self.contig_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "contig id out of range",
+            ));
+        }
+        self.name_at(self.contig_index_offset + contig_id * NAME_SIDECAR_CONTIG_RECORD_BYTES)
+    }
+
+    pub(crate) fn contig_file_id(&self, contig_id: usize) -> io::Result<usize> {
+        if contig_id >= self.contig_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "contig id out of range",
+            ));
+        }
+        Ok(read_u32(
+            self.mmap.as_slice(),
+            self.contig_index_offset + contig_id * NAME_SIDECAR_CONTIG_RECORD_BYTES + 12,
+        )? as usize)
+    }
+
+    pub(crate) fn contig_segment(&self, contig_id: usize) -> io::Result<(u32, u32)> {
+        if contig_id >= self.contig_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "contig id out of range",
+            ));
+        }
+        let offset = self.contig_index_offset + contig_id * NAME_SIDECAR_CONTIG_RECORD_BYTES;
+        Ok((
+            read_u32(self.mmap.as_slice(), offset + 16)?,
+            read_u32(self.mmap.as_slice(), offset + 20)?,
+        ))
+    }
+}
+
+pub(crate) fn sidecar_entry_path(sketch_path: &Path, filename: &str) -> io::Result<PathBuf> {
+    let filename_path = PathBuf::from(filename);
     let mut components = filename_path.components();
     if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid contig sidecar filename in sketch metadata: {filename:?}"),
+            format!("invalid sidecar filename in sketch metadata: {filename:?}"),
         ));
     }
-
     Ok(sketch_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -390,16 +766,6 @@ pub(crate) fn reference_list_checksum(references: &[FastaInput]) -> u64 {
     hash
 }
 
-fn tsv_field(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '\t' | '\n' | '\r' => ' ',
-            _ => ch,
-        })
-        .collect()
-}
-
 fn files_equal(left: &Path, right: &Path) -> io::Result<bool> {
     if fs::metadata(left)?.len() != fs::metadata(right)?.len() {
         return Ok(false);
@@ -437,7 +803,7 @@ fn publish_immutable_temp_file(temp_path: &Path, final_path: &Path) -> io::Resul
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "content-addressed contig sidecar {} already exists with different bytes",
+                        "content-addressed sidecar {} already exists with different bytes",
                         final_path.display()
                     ),
                 ))
@@ -445,236 +811,6 @@ fn publish_immutable_temp_file(temp_path: &Path, final_path: &Path) -> io::Resul
         }
         Err(err) => Err(err),
     }
-}
-
-pub(crate) fn write_contig_name_sidecar(
-    sidecar_path: &Path,
-    files: &[ReferenceFile],
-    contig_names: &[ReferenceContigName],
-) -> io::Result<u64> {
-    let path: PathBuf = sidecar_path.to_path_buf();
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-
-    let (temp_path, file): (PathBuf, fs::File) = create_sibling_temp_file(&path)?;
-    let result: io::Result<()> = (|| {
-        if is_gzip_path(&path) {
-            let mut writer = ZBuilder::<Bgzf, fs::File>::new()
-                .num_threads(1)
-                .from_writer(file);
-            write_contig_name_records(&mut *writer, files, contig_names)?;
-            writer.finish().map_err(gzp_error_to_io)?;
-        } else {
-            let mut writer: BufWriter<fs::File> = BufWriter::new(file);
-            write_contig_name_records(&mut writer, files, contig_names)?;
-            writer.flush()?;
-        }
-        publish_immutable_temp_file(&temp_path, &path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result?;
-    Ok(fs::metadata(&path)?.len())
-}
-
-fn load_contig_sidecar_contents(path: &Path) -> io::Result<String> {
-    read_text_maybe_gzip(path).map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!(
-                "failed to read contig sidecar {}; rebuild the sketch database to create it: {err}",
-                path.display()
-            ),
-        )
-    })
-}
-
-fn parse_usize_field(value: &str, field: &str, path: &Path) -> io::Result<usize> {
-    value.parse::<usize>().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "failed to parse {field} in contig sidecar {}: {err}",
-                path.display()
-            ),
-        )
-    })
-}
-
-fn parse_u32_field(value: &str, field: &str, path: &Path) -> io::Result<u32> {
-    value.parse::<u32>().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "failed to parse {field} in contig sidecar {}: {err}",
-                path.display()
-            ),
-        )
-    })
-}
-
-pub(crate) fn load_contig_name_sidecar(
-    sidecar_path: &Path,
-    expected_contigs: usize,
-    expected_file_bytes: u64,
-    expected_files: &[ReferenceFile],
-    expected_contig_records: &[ContigRecord],
-) -> io::Result<Vec<ReferenceContigName>> {
-    let path: PathBuf = sidecar_path.to_path_buf();
-    let actual_file_bytes: u64 = fs::metadata(&path)
-        .map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!(
-                    "failed to inspect contig sidecar {}; rebuild the sketch database to create it: {err}",
-                    path.display()
-                ),
-            )
-        })?
-        .len();
-    if actual_file_bytes != expected_file_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "contig sidecar {} has {actual_file_bytes} bytes, expected {expected_file_bytes}; rebuild the sketch database",
-                path.display()
-            ),
-        ));
-    }
-    let contents: String = load_contig_sidecar_contents(&path)?;
-    let mut digest = Fnv128Writer::default();
-    digest.write_all(contents.as_bytes())?;
-    let expected_content_path: PathBuf =
-        content_addressed_contig_sidecar_path(&path, &format!("{:032x}", digest.state));
-    if expected_content_path.file_name() != path.file_name() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "contig sidecar {} does not match its content digest; rebuild the sketch database",
-                path.display()
-            ),
-        ));
-    }
-    if expected_contig_records.len() != expected_contigs {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "reference sketch has {} binary contig records, expected {expected_contigs}",
-                expected_contig_records.len()
-            ),
-        ));
-    }
-    let mut lines = contents.lines();
-    let header: &str = lines.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("contig sidecar {} is empty", path.display()),
-        )
-    })?;
-    if header
-        != "contig_id\treference_file_id\treference_file\treference_contig\tsegment_start\tsegment_end"
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("contig sidecar {} has an unexpected header", path.display()),
-        ));
-    }
-
-    let mut contigs: Vec<ReferenceContigName> = Vec::with_capacity(expected_contigs);
-    for (line_index, line) in lines.enumerate() {
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 6 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "contig sidecar {} line {} has {} fields, expected 6",
-                    path.display(),
-                    line_index + 2,
-                    fields.len()
-                ),
-            ));
-        }
-
-        let contig_id: usize = parse_usize_field(fields[0], "contig_id", &path)?;
-        if contig_id != contigs.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "contig sidecar {} expected contig_id {}, found {contig_id}",
-                    path.display(),
-                    contigs.len()
-                ),
-            ));
-        }
-
-        let file_id: usize = parse_usize_field(fields[1], "reference_file_id", &path)?;
-        let expected_record: &ContigRecord = &expected_contig_records[contig_id];
-        if file_id != expected_record.file_id as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "contig sidecar {} contig_id {contig_id} has reference_file_id {file_id}, but the sketch record has {}",
-                    path.display(),
-                    expected_record.file_id
-                ),
-            ));
-        }
-        let expected_file: &ReferenceFile = expected_files.get(file_id).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "contig sidecar {} contig_id {contig_id} references missing file_id {file_id}",
-                    path.display()
-                ),
-            )
-        })?;
-        let expected_reference_file: String = tsv_field(&expected_file.path);
-        if fields[2] != expected_reference_file {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "contig sidecar {} contig_id {contig_id} reference_file does not match sketch file_id {file_id}",
-                    path.display()
-                ),
-            ));
-        }
-        let segment_start: u32 = parse_u32_field(fields[4], "segment_start", &path)?;
-        let segment_end: u32 = parse_u32_field(fields[5], "segment_end", &path)?;
-        if segment_start > segment_end {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "contig sidecar {} contig_id {contig_id} has segment_start {segment_start} after segment_end {segment_end}",
-                    path.display()
-                ),
-            ));
-        }
-
-        contigs.push(ReferenceContigName {
-            file_id,
-            name: fields[3].to_string(),
-            segment_start,
-            segment_end,
-        });
-    }
-
-    if contigs.len() != expected_contigs {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "contig sidecar {} has {} contigs, expected {expected_contigs}",
-                path.display(),
-                contigs.len()
-            ),
-        ));
-    }
-
-    Ok(contigs)
 }
 
 pub(crate) fn unix_timestamp_seconds() -> io::Result<u64> {
@@ -694,8 +830,14 @@ pub(crate) fn build_generation_id() -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_bytes_atomically, SketchOutput};
-    use crate::ani::{manifest_path, shard_filename, shard_path, sketch_reference_name};
+    use super::{
+        build_name_sidecar_bytes, write_bytes_atomically, write_name_sidecar, NameSidecar,
+        SketchOutput,
+    };
+    use crate::ani::{
+        manifest_path, shard_filename, shard_path, sketch_reference_name, ReferenceContigName,
+        ReferenceFile,
+    };
     use std::{
         env, fs, io,
         io::Write,
@@ -709,6 +851,113 @@ mod tests {
             .expect("clock after epoch")
             .as_nanos();
         env::temp_dir().join(format!("fasterani-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn name_fixture() -> (Vec<ReferenceFile>, Vec<ReferenceContigName>) {
+        (
+            vec![
+                ReferenceFile {
+                    path: "alpha.fa".to_string(),
+                    mapped_length: 80,
+                    original_length: 101,
+                },
+                ReferenceFile {
+                    path: "βeta.fa".to_string(),
+                    mapped_length: 190,
+                    original_length: 203,
+                },
+            ],
+            vec![
+                ReferenceContigName {
+                    file_id: 0,
+                    name: "".to_string(),
+                    segment_start: 0,
+                    segment_end: 10,
+                },
+                ReferenceContigName {
+                    file_id: 0,
+                    name: "split-name".to_string(),
+                    segment_start: 20,
+                    segment_end: 30,
+                },
+                ReferenceContigName {
+                    file_id: 1,
+                    name: "β-contig".to_string(),
+                    segment_start: 0,
+                    segment_end: 40,
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn indexed_name_sidecar_round_trips_without_owned_names() -> io::Result<()> {
+        let directory = unique_test_dir("name-sidecar-round-trip");
+        fs::create_dir_all(&directory)?;
+        let sketch_path = directory.join("reference.fasketch.gz");
+        let (files, contigs) = name_fixture();
+        let (filename, file_bytes) = write_name_sidecar(&sketch_path, &files, &contigs)?;
+        let path = directory.join(filename);
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("bin")
+        );
+
+        let sidecar = NameSidecar::open(&path, file_bytes)?;
+        assert!(NameSidecar::open(&path, file_bytes + 1).is_err());
+        assert_eq!(sidecar.genome_count(), 2);
+        assert_eq!(sidecar.contig_count(), 3);
+        assert_eq!(sidecar.genome_name(0)?, "alpha.fa");
+        assert_eq!(sidecar.genome_name(1)?, "βeta.fa");
+        assert_eq!(sidecar.genome_length(1)?, 203);
+        assert_eq!(sidecar.genome_mapped_length(1)?, 190);
+        assert_eq!(sidecar.contig_name(0)?, "");
+        assert_eq!(sidecar.contig_name(2)?, "β-contig");
+        let name_ptr = sidecar.genome_name(0)?.as_ptr() as usize;
+        let mmap_start = sidecar.mmap.as_slice().as_ptr() as usize;
+        assert!((mmap_start..mmap_start + sidecar.mmap.as_slice().len()).contains(&name_ptr));
+        assert!(sidecar.genome_name(2).is_err());
+        assert!(sidecar.contig_name(3).is_err());
+        drop(sidecar);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn indexed_name_sidecar_rejects_corruption() -> io::Result<()> {
+        let directory = unique_test_dir("name-sidecar-corruption");
+        fs::create_dir_all(&directory)?;
+        let (files, contigs) = name_fixture();
+        let valid = build_name_sidecar_bytes(&files, &contigs)?;
+        for (label, mut bytes) in [
+            ("magic", {
+                let mut value = valid.clone();
+                value[0] ^= 1;
+                value
+            }),
+            ("offset", {
+                let mut value = valid.clone();
+                value[48..56].copy_from_slice(&0u64.to_le_bytes());
+                value
+            }),
+            ("utf8", {
+                let mut value = valid.clone();
+                let last = value.len() - 1;
+                value[last] = 0xff;
+                value
+            }),
+            ("truncated", valid[..valid.len() - 1].to_vec()),
+        ] {
+            let path = directory.join(format!("fasterani-names.{label}.bin"));
+            fs::write(&path, &bytes)?;
+            assert!(
+                NameSidecar::open(&path, bytes.len() as u64).is_err(),
+                "{label}"
+            );
+            bytes.clear();
+        }
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[test]

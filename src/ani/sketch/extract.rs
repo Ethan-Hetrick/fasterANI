@@ -26,6 +26,12 @@ pub(crate) struct ExtractedReferenceSegment {
     pub(crate) minimizers: Vec<ReferenceMinimizer>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ReferenceExtractionStats {
+    pub(crate) mapped_length: u64,
+    pub(crate) original_length: u64,
+}
+
 struct PendingRecord {
     name: String,
     sequence: Vec<u8>,
@@ -321,7 +327,7 @@ pub(crate) fn for_each_extracted_reference_segment<F>(
     reference: &FastaInput,
     params: SketchParams,
     mut sink: F,
-) -> io::Result<u64>
+) -> io::Result<ReferenceExtractionStats>
 where
     F: FnMut(ExtractedReferenceSegment) -> io::Result<()>,
 {
@@ -335,6 +341,7 @@ where
     let mut records = reader.records();
     let mut record_number: usize = 0;
     let mut mapped_length: u64 = 0;
+    let mut original_length: u64 = 0;
 
     loop {
         let mut batch: Vec<PendingRecord> = Vec::with_capacity(EXTRACT_BATCH_RECORDS);
@@ -360,6 +367,22 @@ where
                 )
             })?;
             let sequence: Vec<u8> = record.sequence().as_ref().to_vec();
+            original_length = original_length
+                .checked_add(u64::try_from(sequence.len()).map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "reference {} record length exceeds u64: {err}",
+                            reference.label
+                        ),
+                    )
+                })?)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("reference {} original length exceeds u64", reference.label),
+                    )
+                })?;
             batch_bases = batch_bases.checked_add(sequence.len()).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -407,7 +430,10 @@ where
         }
     }
 
-    Ok(mapped_length)
+    Ok(ReferenceExtractionStats {
+        mapped_length,
+        original_length,
+    })
 }
 
 #[cfg(test)]
@@ -524,7 +550,7 @@ mod tests {
             .build()
             .expect("test pool");
         let mut observed = Vec::new();
-        let mapped_length = pool.install(|| {
+        let extraction = pool.install(|| {
             for_each_extracted_reference_segment(&reference, params, |segment| {
                 observed.push((
                     segment.record_name,
@@ -535,7 +561,11 @@ mod tests {
             })
         })?;
 
-        assert_eq!(mapped_length, 0);
+        assert_eq!(extraction.mapped_length, 0);
+        assert_eq!(
+            extraction.original_length,
+            ((EXTRACT_BATCH_RECORDS + 3) * 20) as u64
+        );
         assert_eq!(observed.len(), (EXTRACT_BATCH_RECORDS + 3) * 2);
         for record_index in 0..(EXTRACT_BATCH_RECORDS + 3) {
             assert_eq!(

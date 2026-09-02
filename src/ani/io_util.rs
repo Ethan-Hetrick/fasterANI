@@ -35,7 +35,6 @@ pub(crate) fn checked_section_end(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn sketch_reference_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -115,22 +114,6 @@ pub(crate) fn open_fasta_reader(path: &str) -> io::Result<fasta::io::Reader<Box<
     };
 
     fasta::io::reader::Builder.build_from_reader(reader)
-}
-
-pub(crate) fn read_text_maybe_gzip(path: &Path) -> io::Result<String> {
-    let file: fs::File = fs::File::open(path)?;
-    let mut contents: String = String::new();
-
-    if is_gzip_path(path) {
-        let mut reader: BufReader<MultiGzDecoder<fs::File>> =
-            BufReader::new(MultiGzDecoder::new(file));
-        reader.read_to_string(&mut contents)?;
-    } else {
-        let mut reader: BufReader<fs::File> = BufReader::new(file);
-        reader.read_to_string(&mut contents)?;
-    }
-
-    Ok(contents)
 }
 
 pub(crate) fn compress_file_to_bgzf(

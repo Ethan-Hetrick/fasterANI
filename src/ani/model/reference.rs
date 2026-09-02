@@ -41,6 +41,8 @@ pub(crate) struct ShardedBuildOptions<'a> {
 pub(crate) struct ReferenceFile {
     pub(crate) path: String,
     pub(crate) mapped_length: u64,
+    #[serde(default)]
+    pub(crate) original_length: u64,
 }
 
 /// One FASTA record from a reference file and its ordered minimizers.
@@ -143,25 +145,19 @@ pub(crate) struct CachedReferenceMetadata {
     pub(crate) w: usize,
     #[serde(default)]
     pub(crate) minimizer_hash_seed: u32,
-    #[serde(default)]
-    pub(crate) key_mode: String,
     #[serde(default = "default_fragment_length")]
     pub(crate) fragment_length: u32,
     pub(crate) min_fragment_length: u32,
     #[serde(default)]
     pub(crate) split_n_run: usize,
-    #[serde(default)]
-    pub(crate) dust_enabled: bool,
-    pub(crate) files: Vec<ReferenceFile>,
+    pub(crate) reference_count: usize,
     pub(crate) mphf: Mphf<MinimizerKey>,
     pub(crate) key_count: usize,
     pub(crate) hit_count: usize,
     pub(crate) contig_count: usize,
     pub(crate) reference_minimizer_count: usize,
-    #[serde(default)]
-    pub(crate) contig_sidecar_filename: String,
-    #[serde(default)]
-    pub(crate) contig_sidecar_file_bytes: u64,
+    pub(crate) name_sidecar_filename: String,
+    pub(crate) name_sidecar_file_bytes: u64,
 }
 
 /// Top-level metadata for a manifest-backed sharded reference database.
@@ -173,13 +169,10 @@ pub(crate) struct ShardManifest {
     pub(crate) w: usize,
     #[serde(default)]
     pub(crate) minimizer_hash_seed: u32,
-    pub(crate) key_mode: String,
     #[serde(default = "default_fragment_length")]
     pub(crate) fragment_length: u32,
     pub(crate) min_fragment_length: u32,
     pub(crate) split_n_run: usize,
-    #[serde(default)]
-    pub(crate) dust_enabled: bool,
     #[serde(default = "default_max_shard_minimizers")]
     pub(crate) max_shard_minimizers: usize,
     pub(crate) total_references: usize,

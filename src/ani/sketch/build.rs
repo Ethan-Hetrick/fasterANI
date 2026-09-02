@@ -32,7 +32,7 @@ fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::R
     let mut keyed_hits: Vec<(MinimizerKey, SeedHit)> = Vec::new();
     let mut minimizer_count: usize = 0usize;
 
-    let mapped_length: u64 = for_each_extracted_reference_segment(reference, params, |segment| {
+    let extraction = for_each_extracted_reference_segment(reference, params, |segment| {
         let local_contig_id_u32: u32 = u32::try_from(contigs.len()).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -81,7 +81,8 @@ fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::R
     Ok(FileBuild {
         file: ReferenceFile {
             path: reference.label.clone(),
-            mapped_length,
+            mapped_length: extraction.mapped_length,
+            original_length: extraction.original_length,
         },
         contigs,
         contig_names,

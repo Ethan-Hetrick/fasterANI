@@ -19,7 +19,7 @@ use crate::ani::{
     ScratchFile, SeedHit, ShardManifest, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES,
     ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
     PARTITIONED_INDEX_MINIMIZER_THRESHOLD, REFERENCE_PROGRESS_INTERVAL,
-    SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE, SKETCH_VERSION,
+    SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
 };
 
 /// User-selectable strategy for building the reference sketch index.
@@ -372,31 +372,22 @@ pub(crate) fn shard_manifest_compatibility_error(
     min_fragment_length: u32,
     split_n_run: usize,
 ) -> Option<String> {
-    if manifest.dust_enabled {
-        return Some(
-            "reference sketch database is incompatible: it was built with the removed --dust filter"
-                .to_owned(),
-        );
-    }
-
     if manifest.sketch_format_version != SKETCH_VERSION
         || manifest.database_schema_version != SKETCH_DATABASE_SCHEMA_VERSION
         || manifest.k != kmer_size
         || manifest.w != window_size
         || manifest.minimizer_hash_seed != minimizer_hash_seed
-        || manifest.key_mode != SKETCH_KEY_MODE
         || manifest.fragment_length != fragment_length
         || manifest.min_fragment_length != min_fragment_length
         || manifest.split_n_run != split_n_run
     {
         return Some(format!(
-            "reference sketch database is incompatible: sketch_format_version={} database_schema_version={} k={} w={} minimizer_hash_seed={} key_mode={} fragment_length={} min_fragment_length={} split_n_run={}; rebuild the sketch with the requested parameters",
+            "reference sketch database is incompatible: sketch_format_version={} database_schema_version={} k={} w={} minimizer_hash_seed={} fragment_length={} min_fragment_length={} split_n_run={}; rebuild the sketch with the requested parameters",
             manifest.sketch_format_version,
             manifest.database_schema_version,
             manifest.k,
             manifest.w,
             manifest.minimizer_hash_seed,
-            manifest.key_mode,
             manifest.fragment_length,
             manifest.min_fragment_length,
             manifest.split_n_run

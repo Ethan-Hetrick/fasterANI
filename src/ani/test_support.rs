@@ -3,8 +3,7 @@
 use crate::ani::{
     ShardManifest, ShardManifestEntry, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
     DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
-    DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_KEY_MODE,
-    SKETCH_VERSION,
+    DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
 };
 
 pub(crate) fn repeated_acgt(len: usize) -> Vec<u8> {
@@ -18,11 +17,9 @@ pub(crate) fn sample_shard_manifest() -> ShardManifest {
         k: DEFAULT_KMER_SIZE,
         w: DEFAULT_WINDOW_SIZE,
         minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-        key_mode: SKETCH_KEY_MODE.to_string(),
         fragment_length: DEFAULT_FRAGMENT_LENGTH,
         min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
         split_n_run: DEFAULT_SPLIT_N_RUN,
-        dust_enabled: false,
         max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
         total_references: 2,
         total_reference_contigs: 2,

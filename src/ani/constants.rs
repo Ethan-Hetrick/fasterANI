@@ -29,12 +29,8 @@ pub(crate) const MAX_PARTITION_COUNT: usize = 4096;
 pub(crate) const PARTITION_BUFFER_RECORDS: usize = 65_536;
 pub(crate) const ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER: usize = 16;
 pub(crate) const SKETCH_MAGIC: &[u8; 8] = b"FANIIDX1";
-pub(crate) const SKETCH_VERSION: u32 = 14;
-pub(crate) const SKETCH_DATABASE_SCHEMA_VERSION: u32 = 4;
-/// On-disk tag recording how minimizer keys are encoded: canonical (strand-agnostic)
-/// k-mers, 2-bit-per-base packed, stored as `u32`. Persisted in the sketch manifest so
-/// incompatible databases are rejected on load.
-pub(crate) const SKETCH_KEY_MODE: &str = "canonical-2bit-u32";
+pub(crate) const SKETCH_VERSION: u32 = 16;
+pub(crate) const SKETCH_DATABASE_SCHEMA_VERSION: u32 = 6;
 pub(crate) const REFERENCE_PROGRESS_INTERVAL: usize = 1000;
 pub(crate) const SKETCH_KEY_PACK_PROGRESS_INTERVAL: usize = 5_000_000;
 #[cfg(test)]

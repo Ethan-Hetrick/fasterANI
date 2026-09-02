@@ -13,15 +13,15 @@ use boomphf::Mphf;
 use rayon::prelude::*;
 
 use crate::ani::{
-    align_up, checked_section_end, contig_sidecar_filename, effective_index_build_mode,
-    emit_runtime_progress, for_each_extracted_reference_segment, memory_mib,
-    new_contig_sidecar_path, partition_build_plan, slice_as_bytes, slice_as_bytes_mut,
-    write_contig_name_sidecar, write_padding, CachedReferenceMetadata, ContigRecord, FastaInput,
-    GroupedKeyRecord, IndexBuildMode, MinimizerKey, PartitionBuildPlan, PartitionGroupResult,
-    PartitionHitRecord, PartitionWriters, ReferenceContigName, ReferenceFile, ReferenceHitMap,
-    ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit, SketchBuildStats,
-    SketchOutput, SketchParams, PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL,
-    SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
+    align_up, checked_section_end, effective_index_build_mode, emit_runtime_progress,
+    for_each_extracted_reference_segment, memory_mib, partition_build_plan, slice_as_bytes,
+    slice_as_bytes_mut, write_name_sidecar, write_padding, CachedReferenceMetadata, ContigRecord,
+    FastaInput, GroupedKeyRecord, IndexBuildMode, MinimizerKey, PartitionBuildPlan,
+    PartitionGroupResult, PartitionHitRecord, PartitionWriters, ReferenceContigName,
+    ReferenceExtractionStats, ReferenceFile, ReferenceHitMap, ReferenceMinimizer, ReferenceSketch,
+    RuntimeOptions, ScratchFile, SeedHit, SketchBuildStats, SketchOutput, SketchParams,
+    PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL, SKETCH_KEY_PACK_PROGRESS_INTERVAL,
+    SKETCH_MAGIC, SKETCH_VERSION,
 };
 
 const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
@@ -157,7 +157,7 @@ impl ReferenceSketch {
                     ),
                 )
             })?;
-            let mapped_length: u64 = for_each_extracted_reference_segment(
+            let extraction: ReferenceExtractionStats = for_each_extracted_reference_segment(
                 reference,
                 params,
                 |segment| {
@@ -238,7 +238,8 @@ impl ReferenceSketch {
 
             files.push(ReferenceFile {
                 path: reference.label.clone(),
-                mapped_length,
+                mapped_length: extraction.mapped_length,
+                original_length: extraction.original_length,
             });
 
             let files_done: usize = file_id + 1;
@@ -360,7 +361,7 @@ impl ReferenceSketch {
                     ),
                 )
             })?;
-            let mapped_length: u64 = for_each_extracted_reference_segment(
+            let extraction: ReferenceExtractionStats = for_each_extracted_reference_segment(
                 reference,
                 params,
                 |segment| {
@@ -449,7 +450,8 @@ impl ReferenceSketch {
 
             files.push(ReferenceFile {
                 path: reference.label.clone(),
-                mapped_length,
+                mapped_length: extraction.mapped_length,
+                original_length: extraction.original_length,
             });
 
             let files_done: usize = file_id + 1;
@@ -876,29 +878,24 @@ impl ReferenceSketch {
                 ),
             ));
         }
-        let contig_sidecar_path = new_contig_sidecar_path(path, &files, &contig_names)?;
-        let contig_sidecar_file_bytes =
-            write_contig_name_sidecar(&contig_sidecar_path, &files, &contig_names)?;
-        let contig_sidecar_filename = contig_sidecar_filename(&contig_sidecar_path)?;
-
+        let (name_sidecar_filename, name_sidecar_file_bytes) =
+            write_name_sidecar(path, &files, &contig_names)?;
         let metadata: CachedReferenceMetadata = CachedReferenceMetadata {
             version: SKETCH_VERSION,
             k: kmer_size,
             w: window_size,
             minimizer_hash_seed,
-            key_mode: SKETCH_KEY_MODE.to_string(),
             fragment_length,
             min_fragment_length,
             split_n_run,
-            dust_enabled: false,
-            files,
+            reference_count: files.len(),
             mphf,
             key_count: slot_keys.len(),
             hit_count: total_hits,
             contig_count: contig_records.len(),
             reference_minimizer_count,
-            contig_sidecar_filename,
-            contig_sidecar_file_bytes,
+            name_sidecar_filename,
+            name_sidecar_file_bytes,
         };
         let metadata_bytes: Vec<u8> = serde_json::to_vec(&metadata).map_err(|err| {
             io::Error::new(
@@ -1010,8 +1007,8 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        FastaInput, IndexBuildMode, ReferenceMinimizer, ReferenceSketch, RuntimeOptions,
-        SketchBuildStats, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
+        FastaInput, IndexBuildMode, NameSidecar, ReferenceMinimizer, ReferenceSketch,
+        RuntimeOptions, SketchBuildStats, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
         DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN,
         DEFAULT_WINDOW_SIZE,
     };
@@ -1125,6 +1122,28 @@ mod tests {
         );
         assert_eq!(hash_sketch.files.len(), partitioned_sketch.files.len());
         assert_eq!(hash_sketch.contigs.len(), partitioned_sketch.contigs.len());
+        assert_eq!(hash_sketch.files[0].original_length, sequence.len() as u64);
+        assert_eq!(
+            partitioned_sketch.files[0].original_length,
+            sequence.len() as u64
+        );
+
+        let name_sidecars: Vec<PathBuf> = fs::read_dir(&directory)?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fasterani-names."))
+            })
+            .collect();
+        assert_eq!(name_sidecars.len(), 1);
+        let name_sidecar_bytes = fs::metadata(&name_sidecars[0])?.len();
+        let name_sidecar = NameSidecar::open(&name_sidecars[0], name_sidecar_bytes)?;
+        assert_eq!(name_sidecar.genome_count(), 1);
+        assert_eq!(name_sidecar.genome_name(0)?, "reference.fa");
+        assert_eq!(name_sidecar.genome_length(0)?, sequence.len() as u64);
+        assert_eq!(name_sidecar.contig_count(), hash_sketch.contigs.len());
+        assert_eq!(name_sidecar.contig_name(0)?, "ref");
 
         for contig_id in 0..hash_sketch.contigs.len() {
             let hash_minimizers: &[ReferenceMinimizer] = hash_sketch
@@ -1147,6 +1166,7 @@ mod tests {
 
         drop(hash_sketch);
         drop(partitioned_sketch);
+        drop(name_sidecar);
         fs::remove_dir_all(directory)?;
 
         Ok(())

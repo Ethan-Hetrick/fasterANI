@@ -10,14 +10,12 @@ use std::{
 };
 
 use crate::ani::{
-    align_up, checked_section_end, contig_sidecar_entry_path, contig_sidecar_filename,
-    decompress_to_scratch, emit_runtime_progress, is_gzip_path, load_contig_name_sidecar,
-    new_contig_sidecar_path, slice_as_bytes, write_contig_name_sidecar, write_padding,
-    CachedReferenceMetadata, ContigRecord, MinimizerKey, MmapFile, MmapReferenceContigs,
-    MmapReferenceIndex, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
-    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
-    SketchOutput, SketchParams, SKETCH_KEY_MODE, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC,
-    SKETCH_VERSION,
+    align_up, checked_section_end, decompress_to_scratch, emit_runtime_progress, is_gzip_path,
+    sidecar_entry_path, slice_as_bytes, write_name_sidecar, write_padding, CachedReferenceMetadata,
+    ContigRecord, MinimizerKey, MmapFile, MmapReferenceContigs, MmapReferenceIndex, NameSidecar,
+    ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap, ReferenceIndex,
+    ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit, SketchOutput,
+    SketchParams, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
 };
 #[cfg(test)]
 use crate::ani::{memory_mib, sketch_reference_name};
@@ -114,6 +112,7 @@ impl ReferenceSketch {
             .map(|file| ReferenceFile {
                 path: sketch_reference_name(&file.path),
                 mapped_length: file.mapped_length,
+                original_length: file.original_length,
             })
             .collect();
 
@@ -262,29 +261,24 @@ impl ReferenceSketch {
                 ),
             ));
         }
-        let contig_sidecar_path = new_contig_sidecar_path(path, &files, &contig_names)?;
-        let contig_sidecar_file_bytes =
-            write_contig_name_sidecar(&contig_sidecar_path, &files, &contig_names)?;
-        let contig_sidecar_filename = contig_sidecar_filename(&contig_sidecar_path)?;
-
+        let (name_sidecar_filename, name_sidecar_file_bytes) =
+            write_name_sidecar(path, &files, &contig_names)?;
         let metadata: CachedReferenceMetadata = CachedReferenceMetadata {
             version: SKETCH_VERSION,
             k: kmer_size,
             w: window_size,
             minimizer_hash_seed,
-            key_mode: SKETCH_KEY_MODE.to_string(),
             fragment_length,
             min_fragment_length,
             split_n_run,
-            dust_enabled: false,
-            files,
+            reference_count: files.len(),
             mphf,
             key_count: slot_keys.len(),
             hit_count: hit_payloads.len(),
             contig_count: contig_records.len(),
             reference_minimizer_count,
-            contig_sidecar_filename,
-            contig_sidecar_file_bytes,
+            name_sidecar_filename,
+            name_sidecar_file_bytes,
         };
         let metadata_bytes: Vec<u8> = serde_json::to_vec(&metadata).map_err(|err| {
             io::Error::new(
@@ -510,7 +504,7 @@ impl ReferenceSketch {
                 "sketch_load",
                 &format!(
                     "event=metadata_loaded\tfiles={}\tcontigs={}\tkey_count={}\thit_count={}\treference_minimizers={}",
-                    cached.files.len(),
+                    cached.reference_count,
                     cached.contig_count,
                     cached.key_count,
                     cached.hit_count,
@@ -519,18 +513,10 @@ impl ReferenceSketch {
                 load_start,
             );
         }
-        if cached.dust_enabled {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "reference sketch cache is incompatible: it was built with the removed --dust filter",
-            ));
-        }
-
         if cached.version != SKETCH_VERSION
             || cached.k != kmer_size
             || cached.w != window_size
             || cached.minimizer_hash_seed != minimizer_hash_seed
-            || cached.key_mode != SKETCH_KEY_MODE
             || cached.fragment_length != fragment_length
             || cached.min_fragment_length != min_fragment_length
             || cached.split_n_run != split_n_run
@@ -538,12 +524,11 @@ impl ReferenceSketch {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "reference sketch cache is incompatible: version={} k={} w={} minimizer_hash_seed={} key_mode={} fragment_length={} min_fragment_length={} split_n_run={}; rebuild the sketch with the requested parameters",
+                    "reference sketch cache is incompatible: version={} k={} w={} minimizer_hash_seed={} fragment_length={} min_fragment_length={} split_n_run={}; rebuild the sketch with the requested parameters",
                     cached.version,
                     cached.k,
                     cached.w,
                     cached.minimizer_hash_seed,
-                    cached.key_mode,
                     cached.fragment_length,
                     cached.min_fragment_length,
                     cached.split_n_run
@@ -597,7 +582,7 @@ impl ReferenceSketch {
                 &format!(
                     "event=complete\tmmap_bytes={}\tfiles={}\tcontigs={}\tunique_minimizers={}",
                     bytes.len(),
-                    cached.files.len(),
+                    cached.reference_count,
                     cached.contig_count,
                     cached.key_count
                 ),
@@ -611,28 +596,52 @@ impl ReferenceSketch {
             contig_records_offset,
             reference_minimizers_offset,
         };
+        let sidecar_path = sidecar_entry_path(path, &cached.name_sidecar_filename)?;
+        let names = NameSidecar::open(&sidecar_path, cached.name_sidecar_file_bytes)?;
+        if names.genome_count() != cached.reference_count
+            || names.contig_count() != cached.contig_count
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "name sidecar counts do not match sketch metadata",
+            ));
+        }
+        let files: Vec<ReferenceFile> = (0..cached.reference_count)
+            .map(|file_id| {
+                Ok(ReferenceFile {
+                    path: names.genome_name(file_id)?.to_owned(),
+                    mapped_length: names.genome_mapped_length(file_id)?,
+                    original_length: names.genome_length(file_id)?,
+                })
+            })
+            .collect::<io::Result<_>>()?;
         let contig_names: Option<Vec<ReferenceContigName>> = if load_contig_names {
-            if cached.contig_sidecar_filename.is_empty() || cached.contig_sidecar_file_bytes == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "reference sketch cache has incomplete contig sidecar metadata; rebuild the sketch database",
-                ));
-            }
-            let sidecar_path: std::path::PathBuf =
-                contig_sidecar_entry_path(path, &cached.contig_sidecar_filename)?;
-            Some(load_contig_name_sidecar(
-                &sidecar_path,
-                cached.contig_count,
-                cached.contig_sidecar_file_bytes,
-                &cached.files,
-                mmap_contigs.records(),
-            )?)
+            Some(
+                (0..cached.contig_count)
+                    .map(|contig_id| {
+                        let (segment_start, segment_end) = names.contig_segment(contig_id)?;
+                        let file_id = names.contig_file_id(contig_id)?;
+                        if mmap_contigs.records()[contig_id].file_id as usize != file_id {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "name sidecar contig file id does not match sketch",
+                            ));
+                        }
+                        Ok(ReferenceContigName {
+                            file_id,
+                            name: names.contig_name(contig_id)?.to_owned(),
+                            segment_start,
+                            segment_end,
+                        })
+                    })
+                    .collect::<io::Result<_>>()?,
+            )
         } else {
             None
         };
 
         Ok(Self {
-            files: cached.files,
+            files,
             contigs: ReferenceContigs::Mmap(mmap_contigs),
             contig_names,
             index: ReferenceIndex::Mphf(MmapReferenceIndex {
@@ -782,29 +791,24 @@ impl ReferenceSketch {
                 ),
             ));
         }
-        let contig_sidecar_path = new_contig_sidecar_path(path, &files, &contig_names)?;
-        let contig_sidecar_file_bytes =
-            write_contig_name_sidecar(&contig_sidecar_path, &files, &contig_names)?;
-        let contig_sidecar_filename = contig_sidecar_filename(&contig_sidecar_path)?;
-
+        let (name_sidecar_filename, name_sidecar_file_bytes) =
+            write_name_sidecar(path, &files, &contig_names)?;
         let metadata: CachedReferenceMetadata = CachedReferenceMetadata {
             version: SKETCH_VERSION,
             k: kmer_size,
             w: window_size,
             minimizer_hash_seed,
-            key_mode: SKETCH_KEY_MODE.to_string(),
             fragment_length,
             min_fragment_length,
             split_n_run,
-            dust_enabled: false,
-            files,
+            reference_count: files.len(),
             mphf,
             key_count: slot_keys.len(),
             hit_count: hit_payloads.len(),
             contig_count: contig_records.len(),
             reference_minimizer_count,
-            contig_sidecar_filename,
-            contig_sidecar_file_bytes,
+            name_sidecar_filename,
+            name_sidecar_file_bytes,
         };
         let metadata_bytes: Vec<u8> = serde_json::to_vec(&metadata).map_err(|err| {
             io::Error::new(
@@ -920,11 +924,11 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        new_contig_sidecar_path, slice_as_bytes, write_contig_name_sidecar, ContigRecord,
-        ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap,
-        ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit,
-        SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED,
-        DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
+        slice_as_bytes, ContigRecord, ReferenceContig, ReferenceContigName, ReferenceContigs,
+        ReferenceFile, ReferenceHitMap, ReferenceIndex, ReferenceMinimizer, ReferenceSketch,
+        RuntimeOptions, ScratchFile, SeedHit, SketchParams, DEFAULT_FRAGMENT_LENGTH,
+        DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
+        DEFAULT_WINDOW_SIZE,
     };
     use std::{
         env, fs, io,
@@ -998,6 +1002,7 @@ mod tests {
                 vec![ReferenceFile {
                     path: "ref.fa".to_string(),
                     mapped_length: u64::from(DEFAULT_FRAGMENT_LENGTH),
+                    original_length: u64::from(DEFAULT_FRAGMENT_LENGTH),
                 }],
                 &index,
                 vec![ContigRecord {
@@ -1086,6 +1091,7 @@ mod tests {
             files: vec![ReferenceFile {
                 path: "/tmp/ref.fa".to_string(),
                 mapped_length: 3000,
+                original_length: 3200,
             }],
             contigs: ReferenceContigs::Owned(contigs.clone()),
             contig_names: Some(vec![
@@ -1150,114 +1156,6 @@ mod tests {
         drop(loaded);
         fs::remove_dir_all(directory)?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn orphan_sidecar_does_not_change_the_published_sketch_pair() -> io::Result<()> {
-        let sketch: ReferenceSketch = ReferenceSketch {
-            files: vec![ReferenceFile {
-                path: "published.fa".to_string(),
-                mapped_length: 3_000,
-            }],
-            contigs: ReferenceContigs::Owned(vec![ReferenceContig {
-                file_id: 0,
-                minimizers: vec![ReferenceMinimizer {
-                    hash: 11,
-                    position: 7,
-                }],
-            }]),
-            contig_names: Some(vec![ReferenceContigName {
-                file_id: 0,
-                name: "published-contig".to_string(),
-                segment_start: 0,
-                segment_end: 100,
-            }]),
-            index: ReferenceIndex::Hash(ReferenceHitMap::from_iter([(
-                11,
-                vec![SeedHit {
-                    reference_contig_id: 0,
-                    position: 7,
-                }],
-            )])),
-            global_frequencies: None,
-        };
-        let directory: PathBuf = unique_test_dir("orphan-contig-sidecar");
-        fs::create_dir_all(&directory)?;
-        let path: PathBuf = directory.join("reference.fasketch");
-        sketch.save(
-            &path,
-            DEFAULT_KMER_SIZE,
-            DEFAULT_WINDOW_SIZE,
-            DEFAULT_MINIMIZER_HASH_SEED,
-            DEFAULT_FRAGMENT_LENGTH,
-            DEFAULT_MIN_FRAGMENT_LENGTH,
-            0,
-            None,
-            RuntimeOptions::default(),
-        )?;
-
-        let orphan_names = [ReferenceContigName {
-            file_id: 0,
-            name: "unpublished-contig".to_string(),
-            segment_start: 0,
-            segment_end: 100,
-        }];
-        let orphan_path: PathBuf = new_contig_sidecar_path(&path, &sketch.files, &orphan_names)?;
-        write_contig_name_sidecar(&orphan_path, &sketch.files, &orphan_names)?;
-
-        let loaded: ReferenceSketch = ReferenceSketch::load(
-            &path,
-            SketchParams {
-                kmer_size: DEFAULT_KMER_SIZE,
-                window_size: DEFAULT_WINDOW_SIZE,
-                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-                fragment_length: DEFAULT_FRAGMENT_LENGTH,
-                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
-                split_n_run: 0,
-            },
-            true,
-            None,
-            RuntimeOptions::default(),
-        )?;
-        assert_eq!(
-            loaded.contig_names.as_deref().expect("published sidecar")[0].name,
-            "published-contig"
-        );
-
-        let published_sidecar: PathBuf = fs::read_dir(&directory)?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<io::Result<Vec<_>>>()?
-            .into_iter()
-            .find(|candidate| candidate != &path && candidate != &orphan_path)
-            .expect("published sidecar artifact");
-        let mut corrupted_sidecar: Vec<u8> = fs::read(&published_sidecar)?;
-        let name_offset: usize = corrupted_sidecar
-            .windows(b"published-contig".len())
-            .position(|window| window == b"published-contig")
-            .expect("published contig name in sidecar");
-        corrupted_sidecar[name_offset] = b'q';
-        fs::write(&published_sidecar, corrupted_sidecar)?;
-        let error = ReferenceSketch::load(
-            &path,
-            SketchParams {
-                kmer_size: DEFAULT_KMER_SIZE,
-                window_size: DEFAULT_WINDOW_SIZE,
-                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-                fragment_length: DEFAULT_FRAGMENT_LENGTH,
-                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
-                split_n_run: 0,
-            },
-            true,
-            None,
-            RuntimeOptions::default(),
-        )
-        .err()
-        .expect("a same-size published sidecar mutation must be rejected");
-        assert!(error.to_string().contains("content digest"));
-
-        drop(loaded);
-        fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

@@ -17,11 +17,11 @@ use crate::ani::{
     effective_index_build_mode, emit_progress, estimate_partitioned_shard_memory_bytes,
     legacy_sketch_path, manifest_path, memory_mib, plan_shards_by_minimizers,
     reference_list_checksum, shard_entry_path, shard_filename, shard_manifest_compatibility_error,
-    shard_path, unix_timestamp_seconds, validate_max_shard_minimizers, write_bytes_atomically,
-    FastaInput, GlobalFrequencyArtifactStats, GlobalFrequencyIndex, IndexBuildMode,
-    ReferenceSketch, RuntimeOptions, ShardBuildResult, ShardManifest, ShardManifestEntry,
-    ShardPlan, ShardedBuildOptions, SketchBuildStats, SketchParams, SKETCH_DATABASE_SCHEMA_VERSION,
-    SKETCH_KEY_MODE, SKETCH_VERSION,
+    shard_path, sketch_reference_name, unix_timestamp_seconds, validate_max_shard_minimizers,
+    write_bytes_atomically, FastaInput, GlobalFrequencyArtifactStats, GlobalFrequencyIndex,
+    IndexBuildMode, ReferenceSketch, RuntimeOptions, ShardBuildResult, ShardManifest,
+    ShardManifestEntry, ShardPlan, ShardedBuildOptions, SketchBuildStats, SketchParams,
+    SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
 };
 
 /// Reference database opened by the CLI, either legacy single-sketch or manifest-backed shards.
@@ -101,7 +101,9 @@ impl SketchDatabase {
                         || references
                             .iter()
                             .zip(&sketch.files)
-                            .any(|(reference, cached)| reference.label != cached.path))
+                            .any(|(reference, cached)| {
+                                sketch_reference_name(&reference.label) != cached.path
+                            }))
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -337,11 +339,9 @@ impl SketchDatabase {
             k: kmer_size,
             w: window_size,
             minimizer_hash_seed,
-            key_mode: SKETCH_KEY_MODE.to_string(),
             fragment_length,
             min_fragment_length,
             split_n_run,
-            dust_enabled: false,
             max_shard_minimizers,
             total_references: references.len(),
             total_reference_contigs,
@@ -513,7 +513,7 @@ mod tests {
     use crate::ani::{
         append_path_suffix, global_frequency_path, manifest_path, reference_list_checksum,
         sample_shard_manifest, shard_entry_path, shard_manifest_compatibility_error, shard_path,
-        FastaInput, IndexBuildMode, ReferenceSketch, RuntimeOptions, ShardManifest,
+        FastaInput, IndexBuildMode, NameSidecar, ReferenceSketch, RuntimeOptions, ShardManifest,
         ShardedBuildOptions, SketchDatabase, SketchParams, DEFAULT_FRAGMENT_LENGTH,
         DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MINIMIZER_HASH_SEED,
         DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
@@ -580,26 +580,6 @@ mod tests {
         assert_eq!(decoded.shards[0].filename, "database.1.fasketch");
 
         Ok(())
-    }
-
-    #[test]
-    fn shard_manifest_rejects_legacy_dust_database() {
-        let mut manifest: ShardManifest = sample_shard_manifest();
-        manifest.dust_enabled = true;
-
-        let error: Option<String> = shard_manifest_compatibility_error(
-            &manifest,
-            DEFAULT_KMER_SIZE,
-            DEFAULT_WINDOW_SIZE,
-            crate::ani::DEFAULT_MINIMIZER_HASH_SEED,
-            DEFAULT_FRAGMENT_LENGTH,
-            DEFAULT_MIN_FRAGMENT_LENGTH,
-            DEFAULT_SPLIT_N_RUN,
-        );
-
-        assert!(error
-            .expect("dust-enabled manifest should be rejected")
-            .contains("removed --dust filter"));
     }
 
     #[test]
@@ -767,10 +747,25 @@ mod tests {
             RuntimeOptions::default(),
         )?;
         assert_eq!(loaded_shard.files.len(), references.len());
-        assert_eq!(loaded_shard.files[0].path, references[0].label);
+        assert_eq!(loaded_shard.files[0].path, "reference.fna");
+        let name_sidecar_path = fs::read_dir(&directory)?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fasterani-names."))
+            })
+            .expect("sharded build name sidecar");
+        let name_sidecar =
+            NameSidecar::open(&name_sidecar_path, fs::metadata(&name_sidecar_path)?.len())?;
+        assert_eq!(name_sidecar.genome_count(), 1);
+        assert_eq!(name_sidecar.genome_name(0)?, "reference.fna");
+        assert_eq!(name_sidecar.genome_length(0)?, 6_000);
+        assert_eq!(name_sidecar.contig_name(0)?, "sequence");
 
         drop(loaded_shard);
         drop(loaded_database);
+        drop(name_sidecar);
         fs::remove_dir_all(directory)?;
         Ok(())
     }
