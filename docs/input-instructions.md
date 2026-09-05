@@ -37,9 +37,6 @@ query_lists = [
 # builds the sketch only. When queries are present, the sketch is built or reused.
 reference_sketch = "sketches/example-reference-db"
 
-# Overwrite an existing reference sketch in build-only mode.
-force = false
-
 # Label for a streamed stdin query. Use only when query_files contains "-" or
 # "/dev/stdin".
 query_name = "stdin-query.fna"
@@ -143,7 +140,7 @@ tmp = "tmp"
 - `query_name` labels the stdin query path (`"-"` or `"/dev/stdin"`).
 - `minimizer_hash_seed` must match between reference and query minimizers.
 - Existing sketches compare supplied references by ordered path label and count;
-  use `--force` after changing a FASTA in place.
+  use a new sketch prefix after changing a FASTA in place.
 - Reference and query list files may include blank lines and comments beginning
   with `#`.
 - By default, FASTA paths must exist, be regular files, and be larger than 100

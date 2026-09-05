@@ -58,7 +58,6 @@ impl SketchDatabase {
     ) -> io::Result<Self> {
         let ShardedBuildOptions {
             max_shard_size_bytes,
-            force_rebuild,
             ..
         } = shard_opts;
         let Some(prefix) = sketch_prefix else {
@@ -71,58 +70,52 @@ impl SketchDatabase {
 
         validate_max_shard_size_bytes(max_shard_size_bytes)?;
 
-        if !force_rebuild {
-            let manifest_path: PathBuf = manifest_path(prefix);
-            if manifest_path.exists() {
-                let manifest: ShardManifest = Self::load_manifest(prefix, params)?;
-                if !references.is_empty() {
-                    let supplied_checksum: u64 = reference_list_checksum(references);
-                    if references.len() != manifest.total_references
-                        || supplied_checksum != manifest.reference_list_checksum
-                    {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "reference sketch database does not match the supplied reference list: supplied_references={} cached_references={} supplied_checksum={supplied_checksum} cached_checksum={}; rebuild with --force in build-only mode or omit reference inputs to load the existing database",
-                                references.len(),
-                                manifest.total_references,
-                                manifest.reference_list_checksum
-                            ),
-                        ));
-                    }
-                }
-                let global_frequencies: Arc<GlobalFrequencyIndex> =
-                    Arc::new(GlobalFrequencyIndex::load(prefix, &manifest)?);
-                return Ok(Self::Sharded {
-                    prefix: prefix.to_path_buf(),
-                    manifest,
-                    global_frequencies,
-                });
-            }
-
-            if let Some(legacy_path) = legacy_sketch_path(prefix) {
-                let sketch: ReferenceSketch = ReferenceSketch::load(
-                    &legacy_path,
-                    params,
-                    load_contig_names,
-                    runtime_options,
-                )?;
-                if !references.is_empty()
-                    && (references.len() != sketch.files.len()
-                        || references
-                            .iter()
-                            .zip(&sketch.files)
-                            .any(|(reference, cached)| {
-                                sketch_reference_name(&reference.output_label) != cached.path
-                            }))
+        let manifest_path: PathBuf = manifest_path(prefix);
+        if manifest_path.exists() {
+            let manifest: ShardManifest = Self::load_manifest(prefix, params)?;
+            if !references.is_empty() {
+                let supplied_checksum: u64 = reference_list_checksum(references);
+                if references.len() != manifest.total_references
+                    || supplied_checksum != manifest.reference_list_checksum
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "reference sketch does not match the supplied reference list; rebuild the sketch or omit reference inputs to load the existing cache",
+                        format!(
+                            "reference sketch database does not match the supplied reference list: supplied_references={} cached_references={} supplied_checksum={supplied_checksum} cached_checksum={}; use a different sketch prefix or omit reference inputs to load the existing database",
+                            references.len(),
+                            manifest.total_references,
+                            manifest.reference_list_checksum
+                        ),
                     ));
                 }
-                return Ok(Self::Single(sketch));
             }
+            let global_frequencies: Arc<GlobalFrequencyIndex> =
+                Arc::new(GlobalFrequencyIndex::load(prefix, &manifest)?);
+            return Ok(Self::Sharded {
+                prefix: prefix.to_path_buf(),
+                manifest,
+                global_frequencies,
+            });
+        }
+
+        if let Some(legacy_path) = legacy_sketch_path(prefix) {
+            let sketch: ReferenceSketch =
+                ReferenceSketch::load(&legacy_path, params, load_contig_names, runtime_options)?;
+            if !references.is_empty()
+                && (references.len() != sketch.files.len()
+                    || references
+                        .iter()
+                        .zip(&sketch.files)
+                        .any(|(reference, cached)| {
+                            sketch_reference_name(&reference.output_label) != cached.path
+                        }))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "reference sketch does not match the supplied reference list; use a different sketch prefix or omit reference inputs to load the existing cache",
+                ));
+            }
+            return Ok(Self::Single(sketch));
         }
 
         let manifest: ShardManifest =
@@ -642,7 +635,6 @@ mod tests {
                 tmp_dir: None,
                 max_shard_size_bytes: DEFAULT_MAX_SHARD_SIZE_BYTES,
                 threads: 1,
-                force_rebuild: false,
             },
             false,
             RuntimeOptions::default(),
@@ -690,7 +682,6 @@ mod tests {
             tmp_dir: Some(&directory),
             max_shard_size_bytes: DEFAULT_MAX_SHARD_SIZE_BYTES,
             threads: 1,
-            force_rebuild: true,
         };
 
         let published_database = SketchDatabase::collect_or_load(
@@ -731,10 +722,7 @@ mod tests {
             &[],
             params,
             Some(&prefix),
-            ShardedBuildOptions {
-                force_rebuild: false,
-                ..build_options
-            },
+            build_options,
             false,
             RuntimeOptions::default(),
         )?;

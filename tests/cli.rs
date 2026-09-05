@@ -712,9 +712,9 @@ fn reference_is_optional_when_querying_existing_sharded_sketch() {
 }
 
 #[test]
-fn build_only_existing_reference_sketch_requires_force() {
+fn build_only_existing_reference_sketch_warns_and_exits_successfully() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
-    let temp_dir = temp_test_dir("existing-sketch-build-only-requires-force");
+    let temp_dir = temp_test_dir("existing-sketch-build-only-warning");
     let sketch_prefix = temp_dir.join("database");
     let reference_list = temp_dir.join("references.txt");
     let reference = fixture_path("Escherichia_coli_str_K12_MG1655.fna");
@@ -737,42 +737,31 @@ fn build_only_existing_reference_sketch_requires_force() {
         String::from_utf8_lossy(&build_output.stderr)
     );
 
-    let blocked_output = Command::new(exe)
-        .args([
-            "--reference-list",
-            reference_list.to_str().expect("utf-8 reference list"),
-            "--reference-sketch",
-            sketch_prefix.to_str().expect("utf-8 sketch prefix"),
-            "--quiet",
-        ])
-        .output()
-        .expect("failed to launch fasterANI binary");
-    assert!(
-        !blocked_output.status.success(),
-        "build unexpectedly succeeded: {}",
-        String::from_utf8_lossy(&blocked_output.stderr)
-    );
-    let stderr = String::from_utf8(blocked_output.stderr).expect("stderr was not valid UTF-8");
-    assert!(stderr.contains(
-        "Reference sketch exists and no query was provided. Use `--force` to overwrite. Exiting..."
-    ));
+    let manifest_path = PathBuf::from(format!("{}.manifest.json", sketch_prefix.display()));
+    let manifest_before = fs::read(&manifest_path).expect("read initial manifest");
 
-    let forced_output = Command::new(exe)
+    let existing_output = Command::new(exe)
         .args([
             "--reference-list",
             reference_list.to_str().expect("utf-8 reference list"),
             "--reference-sketch",
             sketch_prefix.to_str().expect("utf-8 sketch prefix"),
-            "--force",
             "--quiet",
         ])
         .output()
         .expect("failed to launch fasterANI binary");
     assert!(
-        forced_output.status.success(),
-        "forced build exited with status {:?}: {}",
-        forced_output.status,
-        String::from_utf8_lossy(&forced_output.stderr)
+        existing_output.status.success(),
+        "existing-sketch check exited with status {:?}: {}",
+        existing_output.status,
+        String::from_utf8_lossy(&existing_output.stderr)
+    );
+    let stderr = String::from_utf8(existing_output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.contains("reference sketch already exists"));
+    assert!(stderr.contains("leaving it unchanged"));
+    assert_eq!(
+        fs::read(&manifest_path).expect("reread manifest"),
+        manifest_before
     );
 
     let _ = fs::remove_dir_all(temp_dir);
@@ -1015,7 +1004,6 @@ reference_sketch = "{}"
 query_files = ["{query}"]
 minimizer_hash_seed = 7
 shards = "3,1"
-force = true
 "#,
             missing_sketch.display(),
         ),
@@ -1048,7 +1036,6 @@ force = true
     assert!(!table.contains_key("params_file"));
     assert_eq!(table["minimizer_hash_seed"].as_integer(), Some(7));
     assert_eq!(table["shards"].as_str(), Some("1,3"));
-    assert_eq!(table["force"].as_bool(), Some(true));
     assert_eq!(table["threads"].as_integer(), Some(1));
     assert_eq!(table["per_contig"].as_bool(), Some(false));
     for required_key in [

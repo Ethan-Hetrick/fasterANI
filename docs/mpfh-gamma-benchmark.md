@@ -15,7 +15,6 @@ do
         --reference-list ./benchmarks/ref-1000.txt \
         --reference-sketch "$run_dir/sketch" \
         --mphf-gamma "$gamma" \
-        --force \
         --threads 4 \
         --tmp "$run_dir" \
         --verbose

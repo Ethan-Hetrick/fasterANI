@@ -33,7 +33,6 @@ pub(crate) struct ShardedBuildOptions<'a> {
     pub(crate) tmp_dir: Option<&'a Path>,
     pub(crate) max_shard_size_bytes: u64,
     pub(crate) threads: usize,
-    pub(crate) force_rebuild: bool,
 }
 
 /// One input reference genome file and the number of bases `FastANI` considers mappable.

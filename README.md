@@ -66,7 +66,7 @@ also use one bounded background thread to prefetch the next shard.
   params file and pass it with `--params-file`.
 - Use the same seeding settings when building and querying a reference sketch.
 - Reusing a sketch with reference inputs verifies their ordered path labels and
-  count, not the FASTA byte contents. Rebuild with `--force` after editing a
+  count, not the FASTA byte contents. Use a new sketch prefix after editing a
   reference in place.
 - Leave input validation enabled. `--skip-validation` bypasses FASTA path and
   size checks, while `--quiet` suppresses the startup parameter record and final

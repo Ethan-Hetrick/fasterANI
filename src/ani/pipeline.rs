@@ -135,7 +135,6 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
             tmp_dir: args.tmp_dir.as_deref(),
             max_shard_size_bytes: args.max_shard_size_bytes,
             threads: args.threads,
-            force_rebuild: args.force && args.queries.is_empty(),
         },
         mapping_stats_requested,
         runtime_options,
