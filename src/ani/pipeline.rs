@@ -1,4 +1,4 @@
-//! Top-level `run` orchestration and output writing.
+//! Top-level `run` orchestration.
 
 mod query_batch;
 mod reporting;
