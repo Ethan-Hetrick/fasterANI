@@ -13,7 +13,7 @@ use boomphf::Mphf;
 
 use crate::ani::{
     constants::MinimizerKey,
-    model::{
+    model::reference::{
         ContigRecord, ReferenceContigs, ReferenceIndex, ReferenceMinimizer, ReferenceSketch,
         SeedHit,
     },

@@ -21,16 +21,18 @@ use crate::ani::{
         align_up, checked_section_end, slice_as_bytes, slice_as_bytes_mut, write_padding,
         FastaInput, ScratchFile,
     },
-    model::{
+    model::reference::{
         CachedReferenceMetadata, ContigRecord, ReferenceContigName, ReferenceFile,
         ReferenceMinimizer, ReferenceSketch, SeedHit, SketchBuildStats, SketchParams,
     },
     runtime::{emit_runtime_progress, memory_mib, RuntimeOptions},
     sketch::{
-        effective_index_build_mode, for_each_extracted_reference_segment, partition_build_plan,
-        write_name_sidecar, GroupedKeyRecord, IndexBuildMode, PartitionBuildPlan,
-        PartitionGroupResult, PartitionHitRecord, PartitionWriters, ReferenceExtractionStats,
-        SketchOutput,
+        extract::{for_each_extracted_reference_segment, ReferenceExtractionStats},
+        partition::{
+            effective_index_build_mode, partition_build_plan, GroupedKeyRecord, IndexBuildMode,
+            PartitionBuildPlan, PartitionGroupResult, PartitionHitRecord, PartitionWriters,
+        },
+        serialize::{write_name_sidecar, SketchOutput},
     },
 };
 
@@ -1028,9 +1030,9 @@ mod tests {
             DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
         },
         io_util::FastaInput,
-        model::{ReferenceMinimizer, ReferenceSketch, SketchBuildStats, SketchParams},
+        model::reference::{ReferenceMinimizer, ReferenceSketch, SketchBuildStats, SketchParams},
         runtime::RuntimeOptions,
-        sketch::{IndexBuildMode, NameSidecar},
+        sketch::{partition::IndexBuildMode, serialize::NameSidecar},
     };
     use std::{
         env, fs, io,

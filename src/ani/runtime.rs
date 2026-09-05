@@ -8,7 +8,7 @@ use crate::ani::{cli::CliArgs, constants::DEFAULT_MPHF_GAMMA};
 #[cfg(debug_assertions)]
 use crate::ani::{
     constants::MinimizerKey,
-    model::{ReferenceMinimizer, SeedHit},
+    model::reference::{ReferenceMinimizer, SeedHit},
 };
 
 /// Runtime controls shared by long-running reference build and sketch operations.

@@ -1,6 +1,6 @@
 //! Hot-path mapping counters and optional debug-only seed-hit histograms.
 
-use crate::ani::model::MappingResult;
+use crate::ani::model::query::MappingResult;
 
 /// Fine-grained debug-only seed-hit histogram buckets.
 #[cfg(debug_assertions)]

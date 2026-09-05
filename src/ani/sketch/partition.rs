@@ -22,7 +22,7 @@ use crate::ani::{
     },
     io_util::{open_fasta_reader, slice_as_bytes, FastaInput, ScratchFile},
     minimizer::{expected_minimizer_window_count, split_sequence_ranges},
-    model::{SeedHit, ShardManifest, ShardPlan},
+    model::reference::{SeedHit, ShardManifest, ShardPlan},
     runtime::{emit_progress, RuntimeOptions},
     validation::validate_max_shard_minimizers,
 };
@@ -612,8 +612,8 @@ unsafe fn compute_8_ids_avx2(records: &[PartitionHitRecord; 8], shift: u32, out:
 mod tests {
     use crate::ani::{
         constants::{MAX_PARTITION_COUNT, MIN_PARTITION_COUNT},
-        model::{SeedHit, ShardPlan},
-        sketch::{
+        model::reference::{SeedHit, ShardPlan},
+        sketch::partition::{
             database_build_parallelism, partition_build_plan, partition_id_for_key,
             plan_shards_from_minimizer_counts, PartitionBuildPlan, PartitionHitRecord,
             PartitionWriters,

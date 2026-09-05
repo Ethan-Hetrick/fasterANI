@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::ani::{
     constants::{MinimizerKey, ReferenceHitMap},
     mmap::{MmapReferenceContigs, MmapReferenceIndex},
-    sketch::{GlobalFrequencyIndex, IndexBuildMode},
+    sketch::{frequency::GlobalFrequencyIndex, partition::IndexBuildMode},
     validation::{default_fragment_length, default_max_shard_minimizers},
 };
 

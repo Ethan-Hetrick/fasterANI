@@ -23,20 +23,26 @@ use reporting::{
 use sharded::execute_sharded_queries;
 
 #[cfg(test)]
-use crate::ani::model::MappingResult;
+use crate::ani::model::query::MappingResult;
 use crate::ani::{
     cli::parse_cli_args,
     mapping::MappingExecutor,
     metrics::MappingMetrics,
     minimizer::fastani_compatible_fragment_mode,
-    model::{QueryFile, ReferenceSketch, ShardedBuildOptions, SketchParams},
+    model::{
+        query::QueryFile,
+        reference::{ReferenceSketch, ShardedBuildOptions, SketchParams},
+    },
     runtime::{emit_progress, peak_rss_kb, performance_metrics_enabled, RuntimeOptions},
-    sketch::{legacy_sketch_path, manifest_path, SketchDatabase},
+    sketch::{
+        database::SketchDatabase,
+        serialize::{legacy_sketch_path, manifest_path},
+    },
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
     metrics::{SEED_HIT_HISTOGRAM_OVERFLOW_LABEL, SEED_HIT_HISTOGRAM_UPPER_BOUNDS},
-    model::ReferenceMemoryEstimate,
+    model::reference::ReferenceMemoryEstimate,
     runtime::memory_mib,
 };
 

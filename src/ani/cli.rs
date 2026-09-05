@@ -20,7 +20,10 @@ use crate::ani::{
     },
     io_util::{is_stdin_path, FastaInput},
     params_file::{load_params_file, ParamsFileConfig},
-    sketch::{legacy_sketch_path, manifest_path, IndexBuildMode},
+    sketch::{
+        partition::IndexBuildMode,
+        serialize::{legacy_sketch_path, manifest_path},
+    },
     validation::{
         validate_fragment_length, validate_kmer_size, validate_mash_confidence,
         validate_mash_threshold, validate_max_shard_minimizers, validate_mphf_gamma,

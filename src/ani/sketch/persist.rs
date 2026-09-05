@@ -19,12 +19,12 @@ use crate::ani::{
         write_padding, ScratchFile,
     },
     mmap::{MmapFile, MmapReferenceContigs, MmapReferenceIndex},
-    model::{
+    model::reference::{
         CachedReferenceMetadata, ContigRecord, ReferenceContigName, ReferenceContigs,
         ReferenceFile, ReferenceIndex, ReferenceMinimizer, ReferenceSketch, SeedHit, SketchParams,
     },
     runtime::{emit_runtime_progress, RuntimeOptions},
-    sketch::{sidecar_entry_path, write_name_sidecar, NameSidecar, SketchOutput},
+    sketch::serialize::{sidecar_entry_path, write_name_sidecar, NameSidecar, SketchOutput},
 };
 #[cfg(test)]
 use crate::ani::{io_util::sketch_reference_name, runtime::memory_mib};
@@ -939,7 +939,7 @@ mod tests {
             DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
         },
         io_util::{slice_as_bytes, ScratchFile},
-        model::{
+        model::reference::{
             ContigRecord, ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile,
             ReferenceIndex, ReferenceMinimizer, ReferenceSketch, SeedHit, SketchParams,
         },

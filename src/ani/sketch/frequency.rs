@@ -13,9 +13,11 @@ use std::{
 use crate::ani::{
     io_util::ScratchFile,
     mmap::MmapFile,
-    model::{ReferenceIndex, ReferenceSketch, ShardManifest, ShardManifestEntry, SketchParams},
+    model::reference::{
+        ReferenceIndex, ReferenceSketch, ShardManifest, ShardManifestEntry, SketchParams,
+    },
     runtime::{emit_progress, RuntimeOptions},
-    sketch::{
+    sketch::serialize::{
         global_frequency_entry_path, global_frequency_filename, global_frequency_path, SketchOutput,
     },
 };
@@ -582,8 +584,8 @@ mod tests {
     };
     use crate::ani::{
         constants::ReferenceHitMap,
-        model::{ReferenceContigs, ReferenceIndex, ReferenceSketch, SeedHit},
-        sketch::global_frequency_filename,
+        model::reference::{ReferenceContigs, ReferenceIndex, ReferenceSketch, SeedHit},
+        sketch::serialize::global_frequency_filename,
     };
     use std::{env, fs, io, path::PathBuf, sync::Arc, time::SystemTime};
 

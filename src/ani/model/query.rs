@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
 
-use crate::ani::{constants::MinimizerKey, minimizer::SlidingSketchCounter, model::SeedHit};
+use crate::ani::{
+    constants::MinimizerKey, minimizer::SlidingSketchCounter, model::reference::SeedHit,
+};
 
 /// One fixed-length query fragment with full scoring minimizers and optional reduced seed hashes.
 #[derive(Clone)]

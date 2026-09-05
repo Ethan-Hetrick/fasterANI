@@ -11,7 +11,7 @@ use crate::ani::{
         canonical_minimizers_with_positions, canonical_minimizers_with_super_kmers,
         mapped_length_from_fragment_ranges, split_sequence_ranges,
     },
-    model::{ReferenceMinimizer, SketchParams},
+    model::reference::{ReferenceMinimizer, SketchParams},
 };
 
 // Keep enough work in flight to make a multi-record FASTA useful to Rayon without retaining an

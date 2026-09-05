@@ -15,7 +15,7 @@ use crate::ani::{
         append_path_suffix, compress_file_to_bgzf, sketch_reference_name, FastaInput, ScratchFile,
     },
     mmap::MmapFile,
-    model::{ReferenceContigName, ReferenceFile, ShardManifestEntry},
+    model::reference::{ReferenceContigName, ReferenceFile, ShardManifestEntry},
 };
 
 const NAME_SIDECAR_MAGIC: [u8; 8] = *b"FANINAM\0";
@@ -839,8 +839,8 @@ mod tests {
     };
     use crate::ani::{
         io_util::sketch_reference_name,
-        model::{ReferenceContigName, ReferenceFile},
-        sketch::{manifest_path, shard_filename, shard_path},
+        model::reference::{ReferenceContigName, ReferenceFile},
+        sketch::serialize::{manifest_path, shard_filename, shard_path},
     };
     use std::{
         env, fs, io,

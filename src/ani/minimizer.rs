@@ -6,7 +6,7 @@ use seq_hash::NtHasher;
 use simd_minimizers::canonical_minimizers;
 use simd_minimizers::packed_seq::{PackedNSeqVec, Seq};
 
-use crate::ani::{constants::MinimizerKey, model::ReferenceMinimizer};
+use crate::ani::{constants::MinimizerKey, model::reference::ReferenceMinimizer};
 
 /// Sliding minimizer set used while scoring candidate reference windows.
 #[derive(Default)]
@@ -551,7 +551,9 @@ mod tests {
             mapped_length_from_fragment_ranges, query_fragment_ranges, select_seed_minimizers,
             split_sequence_ranges, usable_minimizer_window_count, MinimizerObservation,
         },
-        sketch::{estimate_reference_minimizer_windows, estimate_selected_minimizers_from_windows},
+        sketch::partition::{
+            estimate_reference_minimizer_windows, estimate_selected_minimizers_from_windows,
+        },
         test_support::repeated_acgt,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};

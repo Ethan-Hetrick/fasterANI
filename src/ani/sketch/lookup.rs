@@ -7,8 +7,8 @@ use crate::ani::{
     metrics::MappingMetrics,
     minimizer::SlidingSketchCounter,
     model::{
-        MappingResult, QueryFragment, ReferenceCandidateRegion, ReferenceMinimizer,
-        ReferenceSketch, SeedHit,
+        query::{MappingResult, QueryFragment, ReferenceCandidateRegion},
+        reference::{ReferenceMinimizer, ReferenceSketch, SeedHit},
     },
 };
 

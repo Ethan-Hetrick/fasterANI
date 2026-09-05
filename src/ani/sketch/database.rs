@@ -15,17 +15,25 @@ use rayon::prelude::*;
 use crate::ani::{
     constants::{SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION},
     io_util::{sketch_reference_name, FastaInput},
-    model::{
+    model::reference::{
         ReferenceSketch, ShardBuildResult, ShardManifest, ShardManifestEntry, ShardPlan,
         ShardedBuildOptions, SketchBuildStats, SketchParams,
     },
     runtime::{emit_progress, memory_mib, RuntimeOptions},
     sketch::{
-        build_generation_id, build_global_frequency_artifact, database_build_parallelism,
-        effective_index_build_mode, estimate_partitioned_shard_memory_bytes, legacy_sketch_path,
-        manifest_path, plan_shards_by_minimizers, reference_list_checksum, shard_entry_path,
-        shard_filename, shard_manifest_compatibility_error, shard_path, unix_timestamp_seconds,
-        write_bytes_atomically, GlobalFrequencyArtifactStats, GlobalFrequencyIndex, IndexBuildMode,
+        frequency::{
+            build_global_frequency_artifact, GlobalFrequencyArtifactStats, GlobalFrequencyIndex,
+        },
+        partition::{
+            database_build_parallelism, effective_index_build_mode,
+            estimate_partitioned_shard_memory_bytes, plan_shards_by_minimizers,
+            shard_manifest_compatibility_error, IndexBuildMode,
+        },
+        serialize::{
+            build_generation_id, legacy_sketch_path, manifest_path, reference_list_checksum,
+            shard_entry_path, shard_filename, shard_path, unix_timestamp_seconds,
+            write_bytes_atomically,
+        },
     },
     validation::validate_max_shard_minimizers,
 };
@@ -523,12 +531,15 @@ mod tests {
             DEFAULT_WINDOW_SIZE,
         },
         io_util::{append_path_suffix, FastaInput},
-        model::{ReferenceSketch, ShardManifest, ShardedBuildOptions, SketchParams},
+        model::reference::{ReferenceSketch, ShardManifest, ShardedBuildOptions, SketchParams},
         runtime::RuntimeOptions,
         sketch::{
-            global_frequency_path, manifest_path, reference_list_checksum, shard_entry_path,
-            shard_manifest_compatibility_error, shard_path, IndexBuildMode, NameSidecar,
-            SketchDatabase,
+            database::SketchDatabase,
+            partition::{shard_manifest_compatibility_error, IndexBuildMode},
+            serialize::{
+                global_frequency_path, manifest_path, reference_list_checksum, shard_entry_path,
+                shard_path, NameSidecar,
+            },
         },
         test_support::sample_shard_manifest,
     };

@@ -11,16 +11,16 @@ use std::{
 use crate::ani::{
     constants::{MinimizerKey, REFERENCE_PROGRESS_INTERVAL},
     io_util::{sketch_reference_name, FastaInput},
-    model::{
+    model::reference::{
         ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceIndex,
         ReferenceMinimizer, ReferenceSketch, SeedHit, SketchParams, TransientReferenceIndex,
     },
     runtime::{emit_progress, RuntimeOptions},
-    sketch::for_each_extracted_reference_segment,
+    sketch::extract::for_each_extracted_reference_segment,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{
-    model::{ContigRecord, ReferenceMemoryEstimate},
+    model::reference::{ContigRecord, ReferenceMemoryEstimate},
     runtime::{memory_mib, reference_build_struct_bytes},
 };
 use rayon::prelude::*;
@@ -438,7 +438,7 @@ mod tests {
             DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
         },
         io_util::FastaInput,
-        model::{ReferenceIndex, ReferenceSketch, SketchParams},
+        model::reference::{ReferenceIndex, ReferenceSketch, SketchParams},
         runtime::RuntimeOptions,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};

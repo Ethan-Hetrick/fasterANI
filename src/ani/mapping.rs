@@ -13,9 +13,11 @@ use crate::ani::{
         query_fragment_ranges, query_fragment_sketch, split_sequence_ranges, QueryFragmentSketch,
     },
     model::{
-        AniComputation, AniDistributionStats, AniSummary, ContigAniSummary, MappingResult,
-        MappingResultKey, MappingScratch, QueryFile, QueryFragment, ReferenceMinimizer,
-        ReferenceSketch,
+        query::{
+            AniComputation, AniDistributionStats, AniSummary, ContigAniSummary, MappingResult,
+            MappingResultKey, MappingScratch, QueryFile, QueryFragment,
+        },
+        reference::{ReferenceMinimizer, ReferenceSketch},
     },
 };
 
@@ -798,7 +800,7 @@ mod tests {
         checked_query_coordinate, compact_reciprocal_best_mappings, compute_distribution_stats,
         final_ani_computation,
     };
-    use crate::ani::model::{AniSummary, MappingResult, QueryFile, QueryFragment};
+    use crate::ani::model::query::{AniSummary, MappingResult, QueryFile, QueryFragment};
     use std::io;
 
     fn assert_close(actual: f64, expected: f64) {
