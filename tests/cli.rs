@@ -29,14 +29,24 @@ fn fixture_path(name: &str) -> String {
         .into_owned()
 }
 
+fn write_synthetic_fasta(path: &Path, name: &str, seed: u64, len: usize) {
+    let mut state = seed;
+    let sequence: String = (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(b"ACGT"[(state & 3) as usize])
+        })
+        .collect();
+    fs::write(path, format!(">{name}\n{sequence}\n")).expect("write synthetic FASTA");
+}
+
 fn assert_expected_test_data_result(stdout: &str) {
     let fields: Vec<&str> = stdout.trim_end().split('\t').collect();
     assert_eq!(fields.len(), 12, "unexpected result fields: {fields:?}");
     assert_eq!(fields[0], "assets/test-data/Shigella_flexneri_2a_01.fna");
-    assert_eq!(
-        fields[1],
-        "assets/test-data/Escherichia_coli_str_K12_MG1655.fna"
-    );
+    assert_eq!(fields[1], "Escherichia_coli_str_K12_MG1655.fna");
     assert_eq!(
         &fields[2..10],
         &["97.636", "0.807", "1608.00", "98.318", "2.500", "0.645", "97.772", "97.500"]
@@ -393,7 +403,7 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("fasterani-contigs."))
+                    .is_some_and(|name| name.starts_with("fasterani-names."))
             })
             .collect();
         assert_eq!(
@@ -794,12 +804,16 @@ fn sharded_query_loads_each_reference_shard_once_for_multiple_queries() {
     let temp_dir = temp_test_dir("multi-query-shard-loads-once");
     let sketch_prefix = temp_dir.join("database");
     let mapping_stats_path = temp_dir.join("mapping-stats.tsv");
+    let reference_one_path = temp_dir.join("reference-one.fna");
+    let reference_two_path = temp_dir.join("reference-two.fna");
+    write_synthetic_fasta(&reference_one_path, "reference-one", 0x1234_5678, 6_000);
+    write_synthetic_fasta(&reference_two_path, "reference-two", 0x8765_4321, 6_000);
     let sketch_prefix = sketch_prefix.to_str().expect("utf-8 sketch prefix");
     let mapping_stats_path = mapping_stats_path
         .to_str()
         .expect("utf-8 mapping stats path");
-    let reference_one = "assets/test-data/Escherichia_coli_str_K12_MG1655.fna";
-    let reference_two = "assets/test-data/Shigella_flexneri_2a_01.fna";
+    let reference_one = reference_one_path.to_str().expect("utf-8 reference path");
+    let reference_two = reference_two_path.to_str().expect("utf-8 reference path");
 
     let build_output = Command::new(exe)
         .args([

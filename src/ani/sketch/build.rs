@@ -9,10 +9,10 @@ use std::{
 };
 
 use crate::ani::{
-    emit_progress, for_each_extracted_reference_segment, FastaInput, MinimizerKey, ReferenceContig,
-    ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceIndex, ReferenceMinimizer,
-    ReferenceSketch, RuntimeOptions, SeedHit, SketchParams, TransientReferenceIndex,
-    REFERENCE_PROGRESS_INTERVAL,
+    emit_progress, for_each_extracted_reference_segment, sketch_reference_name, FastaInput,
+    MinimizerKey, ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile,
+    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
+    TransientReferenceIndex, REFERENCE_PROGRESS_INTERVAL,
 };
 #[cfg(debug_assertions)]
 use crate::ani::{memory_mib, reference_build_struct_bytes, ContigRecord, ReferenceMemoryEstimate};
@@ -80,7 +80,7 @@ fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::R
 
     Ok(FileBuild {
         file: ReferenceFile {
-            path: reference.label.clone(),
+            path: sketch_reference_name(&reference.label),
             mapped_length: extraction.mapped_length,
             original_length: extraction.original_length,
         },
