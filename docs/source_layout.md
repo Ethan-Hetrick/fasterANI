@@ -66,6 +66,12 @@ src/
 
     [cli.rs](http://cli.rs)            CliArgs + argument parsing
 
+    cli/
+
+      effective_config.rs              effective-configuration provenance + startup rendering
+
+      input.rs                         FASTA input validation + path/list resolution
+
     [pipeline.rs](http://pipeline.rs)       output orchestration + run()
 
     test_[support.rs](http://support.rs)   shared unit-test fixtures (debug/test only)

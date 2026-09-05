@@ -1,8 +1,11 @@
 //! Command-line argument parsing and the `--help` text.
 
+mod effective_config;
+mod input;
+
 use std::{
     collections::HashSet,
-    env, fs, io, path,
+    env, io, path,
     path::{Path, PathBuf},
     process,
 };
@@ -15,6 +18,11 @@ use crate::ani::{
     DEFAULT_FREQ_THRESHOLD_PERCENT, DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE,
     DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
     DEFAULT_MIN_PERCENT_IDENTITY, DEFAULT_MPHF_GAMMA, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+};
+use effective_config::{ParameterSource, ParameterSources, RuntimeStartupOutput, StartupValue};
+use input::{
+    add_query_file, add_query_list, add_reference_file, add_reference_list, params_file_base_dir,
+    resolve_path_from_base,
 };
 
 /// Parsed command-line arguments.
@@ -159,415 +167,6 @@ Resources:
   -v, --version                Show version."
 }
 
-const MIN_FASTA_FILE_BYTES: u64 = 100;
-
-fn validate_fasta_file_path(
-    path: &Path,
-    input_kind: &str,
-    original_path: &str,
-    list_path: Option<&str>,
-) -> io::Result<()> {
-    match fs::metadata(path) {
-        Ok(meta) if meta.is_file() && meta.len() > MIN_FASTA_FILE_BYTES => Ok(()),
-        Ok(meta) if meta.is_file() => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            match list_path {
-                Some(_) => format!(
-                    "Path in list is too small: {} ({} bytes, must be > {MIN_FASTA_FILE_BYTES})",
-                    original_path,
-                    meta.len()
-                ),
-                None => format!(
-                    "{input_kind} file is too small: {} ({} bytes, must be > {MIN_FASTA_FILE_BYTES})",
-                    path.display(),
-                    meta.len()
-                ),
-            },
-        )),
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            match list_path {
-                Some(_) => format!("Path in list is not a file: {original_path}"),
-                None => format!("{input_kind} path is not a file: {}", path.display()),
-            },
-        )),
-        Err(err) => Err(io::Error::new(
-            err.kind(),
-            match list_path {
-                Some(list_path) => format!(
-                    "Cannot access path '{original_path}' from list: {list_path}\n{err}"
-                ),
-                None => format!(
-                    "Cannot access {} file {}: {}",
-                    input_kind.to_ascii_lowercase(),
-                    path.display(),
-                    err
-                ),
-            },
-        )),
-    }
-}
-
-fn validate_and_read_path_list_from_base(
-    list_path: &str,
-    base_dir: Option<&Path>,
-    skip_validation: bool,
-) -> io::Result<(PathBuf, Vec<String>)> {
-    let absolute_path = resolve_path_from_base(list_path, base_dir)?;
-    let contents = fs::read_to_string(&absolute_path)?;
-    let mut valid_paths = Vec::new();
-    let list_base_dir = if base_dir.is_some() {
-        absolute_path.parent()
-    } else {
-        None
-    };
-
-    for line in contents.lines() {
-        let path = line.trim();
-        if path.is_empty() || path.starts_with('#') {
-            continue;
-        }
-
-        let absolute_item_path = resolve_path_from_base(path, list_base_dir)?;
-        if !skip_validation {
-            validate_fasta_file_path(&absolute_item_path, "Input", path, Some(list_path))?;
-        }
-        valid_paths.push(absolute_item_path.to_string_lossy().into_owned());
-    }
-    Ok((absolute_path, valid_paths))
-}
-
-fn resolve_path_from_base(value: &str, base_dir: Option<&Path>) -> io::Result<PathBuf> {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        return path::absolute(path);
-    }
-    match base_dir {
-        Some(base_dir) => path::absolute(base_dir.join(path)),
-        None => path::absolute(path),
-    }
-}
-
-#[derive(Default)]
-struct RuntimeStartupOutput {
-    params_file: Option<StartupValue>,
-    reference_files: Vec<StartupValue>,
-    reference_lists: Vec<StartupValue>,
-    query_files: Vec<StartupValue>,
-    query_lists: Vec<StartupValue>,
-    query_name: Option<StartupValue>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ParameterSource {
-    ParamsFile,
-    Cli,
-}
-
-impl ParameterSource {
-    fn label(self) -> &'static str {
-        match self {
-            Self::ParamsFile => "params file",
-            Self::Cli => "CLI",
-        }
-    }
-}
-
-struct StartupValue {
-    value: String,
-    source: ParameterSource,
-}
-
-impl StartupValue {
-    fn new(value: impl Into<String>, source: ParameterSource) -> Self {
-        Self {
-            value: value.into(),
-            source,
-        }
-    }
-}
-
-impl RuntimeStartupOutput {
-    fn emit(&self, args: &CliArgs, sources: &ParameterSources, skip_validation: bool) {
-        let mut entries: Vec<String> = Vec::new();
-
-        push_cli_metadata_string(&mut entries, "params_file", self.params_file.as_ref());
-        push_toml_array(&mut entries, "reference_files", &self.reference_files);
-        push_toml_array(&mut entries, "reference_lists", &self.reference_lists);
-        push_toml_array(&mut entries, "query_files", &self.query_files);
-        push_toml_array(&mut entries, "query_lists", &self.query_lists);
-        push_toml_string(&mut entries, "query_name", self.query_name.as_ref());
-        push_toml_path(
-            &mut entries,
-            "reference_sketch",
-            args.sketch_path.as_ref(),
-            sources.reference_sketch,
-        );
-        push_toml_path(&mut entries, "tmp", args.tmp_dir.as_ref(), sources.tmp);
-        push_toml_path(&mut entries, "out", args.out_path.as_ref(), sources.out);
-        push_toml_path(
-            &mut entries,
-            "mapping_stats",
-            args.mapping_stats_path.as_ref(),
-            sources.mapping_stats,
-        );
-        push_toml_bool(&mut entries, "bgzip", args.bgzip, sources.bgzip);
-        push_toml_bool(&mut entries, "header", args.emit_header, sources.header);
-        push_toml_bool(
-            &mut entries,
-            "per_contig",
-            args.per_contig,
-            sources.per_contig,
-        );
-        push_toml_bool(&mut entries, "verbose", args.verbose, sources.verbose);
-        push_toml_bool(&mut entries, "quiet", args.quiet, sources.quiet);
-        push_toml_bool(&mut entries, "force", args.force, sources.force);
-        entries.push(format!(
-            "# skip_validation = {skip_validation}  (CLI-only metadata)"
-        ));
-
-        push_toml_number(&mut entries, "threads", args.threads, sources.threads);
-        push_toml_number(
-            &mut entries,
-            "freq_threshold_percent",
-            args.freq_threshold_percent,
-            sources.freq_threshold_percent,
-        );
-        if let Some(minmer_count) = args.minmer_count {
-            push_toml_number(
-                &mut entries,
-                "minmer_count",
-                minmer_count,
-                sources.minmer_count,
-            );
-        }
-        push_toml_number(&mut entries, "kmer_size", args.kmer_size, sources.kmer_size);
-        push_toml_number(
-            &mut entries,
-            "window_size",
-            args.window_size,
-            sources.window_size,
-        );
-        push_toml_number(
-            &mut entries,
-            "minimizer_hash_seed",
-            args.minimizer_hash_seed,
-            sources.minimizer_hash_seed,
-        );
-        push_toml_number(
-            &mut entries,
-            "fragment_length",
-            args.fragment_length,
-            sources.fragment_length,
-        );
-        push_toml_number(
-            &mut entries,
-            "fragment_stride",
-            args.fragment_stride,
-            sources.fragment_stride,
-        );
-        push_toml_number(
-            &mut entries,
-            "min_fragment_length",
-            args.min_fragment_length,
-            sources.min_fragment_length,
-        );
-        push_toml_number(
-            &mut entries,
-            "mash_threshold",
-            args.mash_threshold,
-            sources.mash_threshold,
-        );
-        push_toml_number(
-            &mut entries,
-            "mash_confidence",
-            args.mash_confidence,
-            sources.mash_confidence,
-        );
-        push_toml_number(
-            &mut entries,
-            "mphf_gamma",
-            args.mphf_gamma,
-            sources.mphf_gamma,
-        );
-        push_toml_number(
-            &mut entries,
-            "split_n_run",
-            args.split_n_run,
-            sources.split_n_run,
-        );
-        push_toml_number(
-            &mut entries,
-            "max_shard_minimizers",
-            args.max_shard_minimizers,
-            sources.max_shard_minimizers,
-        );
-        entries.push(format!(
-            "index_build_mode = \"{}\"{}",
-            args.index_build_mode.name(),
-            source_comment(sources.index_build_mode)
-        ));
-        if let Some(filter) = &args.shard_filter {
-            let mut sorted: Vec<usize> = filter.iter().copied().collect();
-            sorted.sort_unstable();
-            let rendered: Vec<String> = sorted
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect();
-            entries.push(format!(
-                "shards = \"{}\"{}",
-                rendered.join(","),
-                source_comment(sources.shards)
-            ));
-        }
-
-        eprintln!("################## FasterANI effective runtime parameters ##################");
-        for entry in entries {
-            eprintln!("{entry}");
-        }
-        eprintln!("############################################################################");
-    }
-}
-
-#[derive(Default)]
-struct ParameterSources {
-    threads: Option<ParameterSource>,
-    freq_threshold_percent: Option<ParameterSource>,
-    minmer_count: Option<ParameterSource>,
-    kmer_size: Option<ParameterSource>,
-    window_size: Option<ParameterSource>,
-    minimizer_hash_seed: Option<ParameterSource>,
-    fragment_length: Option<ParameterSource>,
-    fragment_stride: Option<ParameterSource>,
-    min_fragment_length: Option<ParameterSource>,
-    mash_threshold: Option<ParameterSource>,
-    mash_confidence: Option<ParameterSource>,
-    mphf_gamma: Option<ParameterSource>,
-    split_n_run: Option<ParameterSource>,
-    max_shard_minimizers: Option<ParameterSource>,
-    shards: Option<ParameterSource>,
-    index_build_mode: Option<ParameterSource>,
-    reference_sketch: Option<ParameterSource>,
-    tmp: Option<ParameterSource>,
-    out: Option<ParameterSource>,
-    mapping_stats: Option<ParameterSource>,
-    bgzip: Option<ParameterSource>,
-    header: Option<ParameterSource>,
-    per_contig: Option<ParameterSource>,
-    verbose: Option<ParameterSource>,
-    quiet: Option<ParameterSource>,
-    force: Option<ParameterSource>,
-}
-
-fn push_toml_array(entries: &mut Vec<String>, key: &str, values: &[StartupValue]) {
-    if values.is_empty() {
-        return;
-    }
-
-    let rendered_values: Vec<String> = values
-        .iter()
-        .map(|value| format!("\"{}\"", toml_escape(&value.value)))
-        .collect();
-    entries.push(format!(
-        "{key} = [{}]{}",
-        rendered_values.join(", "),
-        source_comment_for_values(values)
-    ));
-}
-
-fn push_toml_path(
-    entries: &mut Vec<String>,
-    key: &str,
-    path: Option<&PathBuf>,
-    source: Option<ParameterSource>,
-) {
-    let Some(path) = path else {
-        return;
-    };
-    entries.push(format!(
-        "{key} = \"{}\"{}",
-        toml_escape(&path.display().to_string()),
-        source_comment(source)
-    ));
-}
-
-fn push_toml_string(entries: &mut Vec<String>, key: &str, value: Option<&StartupValue>) {
-    let Some(value) = value else {
-        return;
-    };
-    entries.push(format!(
-        "{key} = \"{}\"{}",
-        toml_escape(&value.value),
-        source_comment(Some(value.source))
-    ));
-}
-
-fn push_cli_metadata_string(entries: &mut Vec<String>, key: &str, value: Option<&StartupValue>) {
-    let Some(value) = value else {
-        return;
-    };
-    entries.push(format!(
-        "# {key} = \"{}\"  ({}; CLI-only metadata)",
-        toml_escape(&value.value),
-        value.source.label()
-    ));
-}
-
-fn push_toml_bool(
-    entries: &mut Vec<String>,
-    key: &str,
-    value: bool,
-    source: Option<ParameterSource>,
-) {
-    entries.push(format!("{key} = {value}{}", source_comment(source)));
-}
-
-fn push_toml_number(
-    entries: &mut Vec<String>,
-    key: &str,
-    value: impl std::fmt::Display,
-    source: Option<ParameterSource>,
-) {
-    entries.push(format!("{key} = {value}{}", source_comment(source)));
-}
-
-fn source_comment(source: Option<ParameterSource>) -> String {
-    source
-        .map(|source| format!("  # from {}", source.label()))
-        .unwrap_or_default()
-}
-
-fn source_comment_for_values(values: &[StartupValue]) -> String {
-    let has_params_file = values
-        .iter()
-        .any(|value| value.source == ParameterSource::ParamsFile);
-    let has_cli = values
-        .iter()
-        .any(|value| value.source == ParameterSource::Cli);
-
-    match (has_params_file, has_cli) {
-        (true, true) => "  # from params file + CLI".to_owned(),
-        (true, false) => source_comment(Some(ParameterSource::ParamsFile)),
-        (false, true) => source_comment(Some(ParameterSource::Cli)),
-        (false, false) => String::new(),
-    }
-}
-
-fn toml_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
 fn extract_params_file_path(args: &[String]) -> io::Result<Option<String>> {
     let mut params_file_path: Option<String> = None;
     let mut index = 0usize;
@@ -596,130 +195,6 @@ fn extract_params_file_path(args: &[String]) -> io::Result<Option<String>> {
     }
 
     Ok(params_file_path)
-}
-
-fn params_file_base_dir(params_file_path: &Path) -> Option<PathBuf> {
-    let absolute_path = path::absolute(params_file_path).ok()?;
-    absolute_path.parent().map(Path::to_path_buf)
-}
-
-fn add_reference_file(
-    value: &str,
-    source: ParameterSource,
-    base_dir: Option<&Path>,
-    skip_validation: bool,
-    references: &mut Vec<FastaInput>,
-    startup_output: &mut RuntimeStartupOutput,
-) -> io::Result<()> {
-    let reference_absolute_path = resolve_path_from_base(value, base_dir)?;
-    if !skip_validation {
-        validate_fasta_file_path(&reference_absolute_path, "Reference", value, None)?;
-    }
-
-    startup_output.reference_files.push(StartupValue::new(
-        reference_absolute_path.to_string_lossy().into_owned(),
-        source,
-    ));
-    let input_path = match source {
-        ParameterSource::Cli => value.to_owned(),
-        ParameterSource::ParamsFile => reference_absolute_path.display().to_string(),
-    };
-    references.push(FastaInput::from_path(input_path));
-    Ok(())
-}
-
-fn add_reference_list(
-    value: &str,
-    source: ParameterSource,
-    base_dir: Option<&Path>,
-    skip_validation: bool,
-    references: &mut Vec<FastaInput>,
-    startup_output: &mut RuntimeStartupOutput,
-) -> io::Result<()> {
-    let (absolute_path, validated_paths) =
-        validate_and_read_path_list_from_base(value, base_dir, skip_validation)?;
-    match fs::exists(&absolute_path) {
-        Ok(true) => {}
-        Ok(false) => eprintln!(
-            "ERROR\tevent=reference_list_missing\tpath={}",
-            absolute_path.display()
-        ),
-        Err(e) => eprintln!(
-            "ERROR\tevent=reference_list_load_failed\tpath={}\terror={}",
-            absolute_path.display(),
-            e
-        ),
-    }
-
-    startup_output.reference_lists.push(StartupValue::new(
-        absolute_path.to_string_lossy().into_owned(),
-        source,
-    ));
-    references.extend(validated_paths.into_iter().map(FastaInput::from_path));
-    Ok(())
-}
-
-fn add_query_file(
-    value: &str,
-    source: ParameterSource,
-    base_dir: Option<&Path>,
-    skip_validation: bool,
-    queries: &mut Vec<FastaInput>,
-    startup_output: &mut RuntimeStartupOutput,
-) -> io::Result<()> {
-    if is_stdin_path(value) {
-        startup_output
-            .query_files
-            .push(StartupValue::new(value, source));
-        queries.push(FastaInput::from_stdin(None));
-        return Ok(());
-    }
-
-    let query_absolute_path = resolve_path_from_base(value, base_dir)?;
-    if !skip_validation {
-        validate_fasta_file_path(&query_absolute_path, "Query", value, None)?;
-    }
-    startup_output.query_files.push(StartupValue::new(
-        query_absolute_path.to_string_lossy().into_owned(),
-        source,
-    ));
-    let input_path = match source {
-        ParameterSource::Cli => value.to_owned(),
-        ParameterSource::ParamsFile => query_absolute_path.display().to_string(),
-    };
-    queries.push(FastaInput::from_path(input_path));
-    Ok(())
-}
-
-fn add_query_list(
-    value: &str,
-    source: ParameterSource,
-    base_dir: Option<&Path>,
-    skip_validation: bool,
-    queries: &mut Vec<FastaInput>,
-    startup_output: &mut RuntimeStartupOutput,
-) -> io::Result<()> {
-    let (absolute_path, validated_paths) =
-        validate_and_read_path_list_from_base(value, base_dir, skip_validation)?;
-    match fs::exists(&absolute_path) {
-        Ok(true) => {}
-        Ok(false) => eprintln!(
-            "ERROR\tevent=query_list_missing\tpath={}",
-            absolute_path.display()
-        ),
-        Err(e) => eprintln!(
-            "ERROR\tevent=query_list_load_failed\tpath={}\terror={}",
-            absolute_path.display(),
-            e
-        ),
-    }
-
-    startup_output.query_lists.push(StartupValue::new(
-        absolute_path.to_string_lossy().into_owned(),
-        source,
-    ));
-    queries.extend(validated_paths.into_iter().map(FastaInput::from_path));
-    Ok(())
 }
 
 fn parse_shard_filter(s: &str) -> io::Result<HashSet<usize>> {
@@ -770,7 +245,16 @@ fn parse_shard_filter(s: &str) -> io::Result<HashSet<usize>> {
 
 /// Parse command-line arguments.
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
-    let raw_args: Vec<String> = env::args().skip(1).collect();
+    parse_cli_args_from(env::args().skip(1))
+}
+
+/// Parse command-line arguments supplied by a caller rather than the process environment.
+pub(crate) fn parse_cli_args_from<I, S>(args: I) -> io::Result<Option<CliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let raw_args: Vec<String> = args.into_iter().map(Into::into).collect();
     let params_file_path = extract_params_file_path(&raw_args)?;
     let skip_validation = raw_args.iter().any(|arg| arg == "--skip-validation");
     let params_file_config = match params_file_path.as_deref() {
@@ -1574,7 +1058,46 @@ pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_shard_filter;
+    use super::{parse_cli_args_from, parse_shard_filter};
+
+    #[test]
+    fn parse_cli_args_from_accepts_an_argument_iterator() {
+        let args = parse_cli_args_from([
+            "--reference",
+            "reference.fna",
+            "--query",
+            "query.fna",
+            "--skip-validation",
+            "--threads",
+            "3",
+            "--quiet",
+        ])
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(args.references[0].label, "reference.fna");
+        assert_eq!(args.queries[0].label, "query.fna");
+        assert_eq!(args.threads, 3);
+        assert!(args.quiet);
+    }
+
+    #[test]
+    fn parse_cli_args_from_rejects_invalid_values_without_a_process() {
+        let error = parse_cli_args_from([
+            "--reference",
+            "reference.fna",
+            "--query",
+            "query.fna",
+            "--skip-validation",
+            "--threads",
+            "0",
+        ])
+        .err()
+        .expect("zero threads should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("--threads must be at least 1"));
+    }
 
     #[test]
     fn parse_shard_filter_handles_single_index() {
