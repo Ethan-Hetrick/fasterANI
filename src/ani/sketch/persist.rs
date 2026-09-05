@@ -165,7 +165,7 @@ impl ReferenceSketch {
                     io::ErrorKind::InvalidData,
                     format!(
                         "shard has more than u32::MAX hit-payload entries ({}); \
-                         reduce --max-shard-minimizers below 4 294 967 295",
+                         reduce --max-shard-size",
                         hit_payloads.len()
                     ),
                 )

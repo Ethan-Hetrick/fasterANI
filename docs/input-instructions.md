@@ -118,8 +118,9 @@ mash_confidence = 0.9
 # MPHF size/build-time tradeoff for saved sketches. Must be finite and > 1.01.
 mphf_gamma = 10.0
 
-# Maximum estimated reference minimizers per shard. Must be at least 1.
-max_shard_minimizers = 500_000_000
+# Target maximum persisted size per shard. Accepts raw bytes or B, KiB, MiB,
+# and GiB suffixes. A single oversized reference remains in one shard.
+max_shard_size = "10GiB"
 
 # Query only selected shard indices. Requires reference_sketch.
 # Format matches --shards: comma-separated indices and ranges.

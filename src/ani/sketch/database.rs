@@ -26,7 +26,7 @@ use crate::ani::{
         },
         partition::{
             database_build_parallelism, estimate_partitioned_shard_memory_bytes,
-            plan_shards_by_minimizers, shard_manifest_compatibility_error,
+            plan_shards_by_size, shard_manifest_compatibility_error,
         },
         serialize::{
             build_generation_id, legacy_sketch_path, manifest_path, reference_list_checksum,
@@ -34,7 +34,7 @@ use crate::ani::{
             write_bytes_atomically,
         },
     },
-    validation::validate_max_shard_minimizers,
+    validation::validate_max_shard_size_bytes,
 };
 
 /// Reference database opened by the CLI, either legacy single-sketch or manifest-backed shards.
@@ -57,7 +57,7 @@ impl SketchDatabase {
         runtime_options: RuntimeOptions,
     ) -> io::Result<Self> {
         let ShardedBuildOptions {
-            max_shard_minimizers,
+            max_shard_size_bytes,
             force_rebuild,
             ..
         } = shard_opts;
@@ -69,7 +69,7 @@ impl SketchDatabase {
             )?));
         };
 
-        validate_max_shard_minimizers(max_shard_minimizers)?;
+        validate_max_shard_size_bytes(max_shard_size_bytes)?;
 
         if !force_rebuild {
             let manifest_path: PathBuf = manifest_path(prefix);
@@ -154,11 +154,11 @@ impl SketchDatabase {
         } = params;
         let ShardedBuildOptions {
             tmp_dir,
-            max_shard_minimizers,
+            max_shard_size_bytes,
             threads,
             ..
         } = shard_opts;
-        validate_max_shard_minimizers(max_shard_minimizers)?;
+        validate_max_shard_size_bytes(max_shard_size_bytes)?;
         if let Some(parent) = prefix
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -172,7 +172,7 @@ impl SketchDatabase {
             emit_progress(
                 "database_build",
                 &format!(
-                    "event=start\tmode=sharded\tgeneration_id={generation_id}\tprefix={}\treferences={}\tmax_shard_minimizers={max_shard_minimizers}\texecutor_threads={}",
+                    "event=start\tmode=sharded\tgeneration_id={generation_id}\tprefix={}\treferences={}\tmax_shard_size_bytes={max_shard_size_bytes}\texecutor_threads={}",
                     prefix.display(),
                     references.len(),
                     threads
@@ -181,12 +181,12 @@ impl SketchDatabase {
             );
         }
 
-        let shard_plans: Vec<ShardPlan> = plan_shards_by_minimizers(
+        let shard_plans: Vec<ShardPlan> = plan_shards_by_size(
             references,
             kmer_size,
             window_size,
             split_n_run,
-            max_shard_minimizers,
+            max_shard_size_bytes,
             threads,
             runtime_options,
         )?;
@@ -196,7 +196,7 @@ impl SketchDatabase {
             emit_progress(
                 "database_build",
                 &format!(
-                    "event=shards_planned\tgeneration_id={generation_id}\tshards={}\tbuild_parallelism={build_parallelism}\texecutor_threads={threads}\tmax_shard_minimizers={max_shard_minimizers}",
+                    "event=shards_planned\tgeneration_id={generation_id}\tshards={}\tbuild_parallelism={build_parallelism}\texecutor_threads={threads}\tmax_shard_size_bytes={max_shard_size_bytes}",
                     shard_plans.len()
                 ),
                 build_start,
@@ -235,9 +235,10 @@ impl SketchDatabase {
                 emit_progress(
                         "database_build",
                         &format!(
-                            "event=shard_start\tgeneration_id={generation_id}\tshard={shard_index}\tfirst_reference={first_reference}\treference_count={}\testimated_minimizers={}\testimated_memory_mib={:.3}\tbuild_strategy=external_memory\texecutor_threads={threads}\tpath={}",
+                            "event=shard_start\tgeneration_id={generation_id}\tshard={shard_index}\tfirst_reference={first_reference}\treference_count={}\testimated_minimizers={}\testimated_file_bytes={}\testimated_memory_mib={:.3}\tbuild_strategy=external_memory\texecutor_threads={threads}\tpath={}",
                             reference_chunk.len(),
                             shard_plan.estimated_minimizers,
+                            shard_plan.estimated_file_bytes,
                             memory_mib(estimate_partitioned_shard_memory_bytes(
                                 shard_plan.estimated_minimizers
                             )),
@@ -284,6 +285,7 @@ impl SketchDatabase {
                     mapped_reference_length: stats.mapped_reference_length,
                     reference_minimizers: stats.reference_minimizer_count,
                     unique_minimizers: stats.unique_minimizer_count,
+                    estimated_file_bytes: shard_plan.estimated_file_bytes,
                     file_bytes,
                 },
             })
@@ -341,7 +343,7 @@ impl SketchDatabase {
             fragment_length,
             min_fragment_length,
             split_n_run,
-            max_shard_minimizers,
+            max_shard_size_bytes,
             total_references: references.len(),
             total_reference_contigs,
             total_mapped_reference_length,
@@ -511,7 +513,7 @@ impl SketchDatabase {
 mod tests {
     use crate::ani::{
         constants::{
-            DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_MINIMIZERS,
+            DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_SIZE_BYTES,
             DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN,
             DEFAULT_WINDOW_SIZE,
         },
@@ -638,7 +640,7 @@ mod tests {
             Some(&prefix),
             ShardedBuildOptions {
                 tmp_dir: None,
-                max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
+                max_shard_size_bytes: DEFAULT_MAX_SHARD_SIZE_BYTES,
                 threads: 1,
                 force_rebuild: false,
             },
@@ -686,7 +688,7 @@ mod tests {
         let params = default_params();
         let build_options = ShardedBuildOptions {
             tmp_dir: Some(&directory),
-            max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
+            max_shard_size_bytes: DEFAULT_MAX_SHARD_SIZE_BYTES,
             threads: 1,
             force_rebuild: true,
         };

@@ -11,7 +11,7 @@ use crate::ani::{
     constants::{MinimizerKey, ReferenceHitMap},
     mmap::{MmapReferenceContigs, MmapReferenceIndex},
     sketch::frequency::GlobalFrequencyIndex,
-    validation::{default_fragment_length, default_max_shard_minimizers},
+    validation::{default_fragment_length, default_max_shard_size_bytes},
 };
 
 /// The FastANI-style algorithm parameters that travel together through sketch
@@ -31,7 +31,7 @@ pub(crate) struct SketchParams {
 #[derive(Clone, Copy)]
 pub(crate) struct ShardedBuildOptions<'a> {
     pub(crate) tmp_dir: Option<&'a Path>,
-    pub(crate) max_shard_minimizers: usize,
+    pub(crate) max_shard_size_bytes: u64,
     pub(crate) threads: usize,
     pub(crate) force_rebuild: bool,
 }
@@ -173,8 +173,8 @@ pub(crate) struct ShardManifest {
     pub(crate) fragment_length: u32,
     pub(crate) min_fragment_length: u32,
     pub(crate) split_n_run: usize,
-    #[serde(default = "default_max_shard_minimizers")]
-    pub(crate) max_shard_minimizers: usize,
+    #[serde(default = "default_max_shard_size_bytes")]
+    pub(crate) max_shard_size_bytes: u64,
     pub(crate) total_references: usize,
     pub(crate) total_reference_contigs: usize,
     pub(crate) total_mapped_reference_length: u64,
@@ -206,6 +206,8 @@ pub(crate) struct ShardManifestEntry {
     pub(crate) reference_minimizers: usize,
     pub(crate) unique_minimizers: usize,
     #[serde(default)]
+    pub(crate) estimated_file_bytes: u64,
+    #[serde(default)]
     pub(crate) file_bytes: u64,
 }
 
@@ -230,6 +232,7 @@ pub(crate) struct ShardPlan {
     pub(crate) first_reference: usize,
     pub(crate) reference_count: usize,
     pub(crate) estimated_minimizers: usize,
+    pub(crate) estimated_file_bytes: u64,
 }
 
 #[cfg(debug_assertions)]

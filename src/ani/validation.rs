@@ -1,7 +1,7 @@
 //! Validation and default-value helpers for CLI and runtime parameters.
 
 use crate::ani::{
-    constants::{DEFAULT_FRAGMENT_LENGTH, DEFAULT_MAX_SHARD_MINIMIZERS},
+    constants::{DEFAULT_FRAGMENT_LENGTH, DEFAULT_MAX_SHARD_SIZE_BYTES},
     error::AniError,
 };
 
@@ -9,13 +9,13 @@ pub(crate) fn default_fragment_length() -> u32 {
     DEFAULT_FRAGMENT_LENGTH
 }
 
-pub(crate) fn default_max_shard_minimizers() -> usize {
-    DEFAULT_MAX_SHARD_MINIMIZERS
+pub(crate) fn default_max_shard_size_bytes() -> u64 {
+    DEFAULT_MAX_SHARD_SIZE_BYTES
 }
 
-pub(crate) fn validate_max_shard_minimizers(max_shard_minimizers: usize) -> Result<(), AniError> {
-    if max_shard_minimizers == 0 {
-        return Err(AniError::MaxShardMinimizersTooSmall);
+pub(crate) fn validate_max_shard_size_bytes(max_shard_size_bytes: u64) -> Result<(), AniError> {
+    if max_shard_size_bytes == 0 {
+        return Err(AniError::MaxShardSizeTooSmall);
     }
 
     Ok(())

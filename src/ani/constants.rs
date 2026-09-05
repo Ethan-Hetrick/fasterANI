@@ -18,10 +18,10 @@ pub(crate) const DEFAULT_MASH_CONFIDENCE: f64 = 0.9;
 pub(crate) const DEFAULT_FREQ_THRESHOLD_PERCENT: f64 = 0.0;
 /// Default for `--mphf-gamma`: boomphf MPHF size/build-time tradeoff.
 pub(crate) const DEFAULT_MPHF_GAMMA: f64 = 10.0;
-/// Default for `--max-shard-minimizers`: per-shard reference minimizer budget.
-/// 500M targets roughly 10 GiB `.fasketch` shards for GTDB-like bacterial genomes
-/// using the observed storage model of about 21 bytes per reference minimizer.
-pub(crate) const DEFAULT_MAX_SHARD_MINIMIZERS: usize = 500_000_000;
+/// Default target for `--max-shard-size`: 10 GiB per persisted sketch shard.
+pub(crate) const DEFAULT_MAX_SHARD_SIZE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+/// Conservative persisted bytes per selected minimizer used during lightweight planning.
+pub(crate) const ESTIMATED_SKETCH_BYTES_PER_MINIMIZER: u64 = 28;
 pub(crate) const DEFAULT_PARTITION_TARGET_BYTES: usize = 512 * 1024 * 1024;
 pub(crate) const MIN_PARTITION_COUNT: usize = 16;
 pub(crate) const MAX_PARTITION_COUNT: usize = 4096;
@@ -29,7 +29,7 @@ pub(crate) const PARTITION_BUFFER_RECORDS: usize = 65_536;
 pub(crate) const ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER: usize = 16;
 pub(crate) const SKETCH_MAGIC: &[u8; 8] = b"FANIIDX1";
 pub(crate) const SKETCH_VERSION: u32 = 16;
-pub(crate) const SKETCH_DATABASE_SCHEMA_VERSION: u32 = 6;
+pub(crate) const SKETCH_DATABASE_SCHEMA_VERSION: u32 = 7;
 pub(crate) const REFERENCE_PROGRESS_INTERVAL: usize = 1000;
 pub(crate) const SKETCH_KEY_PACK_PROGRESS_INTERVAL: usize = 5_000_000;
 #[cfg(test)]

@@ -20,7 +20,7 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) mash_confidence: Option<f64>,
     pub(crate) mphf_gamma: Option<f64>,
     pub(crate) split_n_run: Option<usize>,
-    pub(crate) max_shard_minimizers: Option<usize>,
+    pub(crate) max_shard_size: Option<String>,
     pub(crate) shards: Option<String>,
     pub(crate) header: Option<bool>,
     pub(crate) per_contig: Option<bool>,

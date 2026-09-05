@@ -14,7 +14,7 @@ use std::{
 use crate::ani::{
     constants::{
         DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE, DEFAULT_FREQ_THRESHOLD_PERCENT,
-        DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE, DEFAULT_MAX_SHARD_MINIMIZERS,
+        DEFAULT_KMER_SIZE, DEFAULT_MASH_CONFIDENCE, DEFAULT_MAX_SHARD_SIZE_BYTES,
         DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_MIN_PERCENT_IDENTITY,
         DEFAULT_MPHF_GAMMA, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
     },
@@ -23,7 +23,7 @@ use crate::ani::{
     sketch::serialize::{legacy_sketch_path, manifest_path},
     validation::{
         validate_fragment_length, validate_kmer_size, validate_mash_confidence,
-        validate_mash_threshold, validate_max_shard_minimizers, validate_mphf_gamma,
+        validate_mash_threshold, validate_max_shard_size_bytes, validate_mphf_gamma,
         validate_window_size,
     },
 };
@@ -60,7 +60,7 @@ pub(crate) struct CliArgs {
     pub(crate) mphf_gamma: f64,
     /// Minimum run-length of ambiguous `N` bases that splits a contig; `0` disables.
     pub(crate) split_n_run: usize,
-    pub(crate) max_shard_minimizers: usize,
+    pub(crate) max_shard_size_bytes: u64,
     pub(crate) shard_filter: Option<HashSet<usize>>,
     pub(crate) force: bool,
 }
@@ -141,6 +141,46 @@ fn parse_shard_filter(s: &str) -> io::Result<HashSet<usize>> {
     Ok(indices)
 }
 
+fn parse_byte_size(value: &str) -> io::Result<u64> {
+    let digit_count = value.bytes().take_while(u8::is_ascii_digit).count();
+    let (number, suffix) = value.split_at(digit_count);
+    if number.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid --max-shard-size value {value:?}"),
+        ));
+    }
+
+    let number = number.parse::<u64>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid --max-shard-size value {value:?}: {err}"),
+        )
+    })?;
+    let multiplier: u64 = match suffix {
+        "" | "B" => 1,
+        "KiB" => 1024,
+        "MiB" => 1024 * 1024,
+        "GiB" => 1024 * 1024 * 1024,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "invalid --max-shard-size suffix in {value:?}; expected B, KiB, MiB, or GiB"
+                ),
+            ));
+        }
+    };
+    let bytes = number.checked_mul(multiplier).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--max-shard-size value {value:?} exceeds the u64 byte limit"),
+        )
+    })?;
+    validate_max_shard_size_bytes(bytes)?;
+    Ok(bytes)
+}
+
 /// Parse command-line arguments.
 pub(crate) fn parse_cli_args() -> io::Result<Option<CliArgs>> {
     parse_cli_args_from(env::args().skip(1))
@@ -197,7 +237,7 @@ where
     let mut mash_confidence: f64 = DEFAULT_MASH_CONFIDENCE;
     let mut mphf_gamma: f64 = DEFAULT_MPHF_GAMMA;
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
-    let mut max_shard_minimizers: Option<usize> = None;
+    let mut max_shard_size_bytes: Option<u64> = None;
     let mut shard_filter: Option<HashSet<usize>> = None;
 
     if let Some(path) = params_file_path.as_deref() {
@@ -355,9 +395,9 @@ where
         split_n_run = value;
         sources.split_n_run = Some(ParameterSource::ParamsFile);
     }
-    if let Some(value) = params_file_config.max_shard_minimizers {
-        max_shard_minimizers = Some(value);
-        sources.max_shard_minimizers = Some(ParameterSource::ParamsFile);
+    if let Some(value) = params_file_config.max_shard_size.as_deref() {
+        max_shard_size_bytes = Some(parse_byte_size(value)?);
+        sources.max_shard_size_bytes = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.shards.as_ref() {
         shard_filter = Some(parse_shard_filter(value)?);
@@ -574,22 +614,16 @@ where
                 shard_filter = Some(parse_shard_filter(&value)?);
                 sources.shards = Some(ParameterSource::Cli);
             }
-            "--max-shard-minimizers" => {
+            "--max-shard-size" => {
                 let value = args.next().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "--max-shard-minimizers requires a value",
+                        "--max-shard-size requires a value",
                     )
                 })?;
-                let parsed_max_shard_minimizers: usize = value.parse::<usize>().map_err(|err| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid --max-shard-minimizers value {value:?}: {err}"),
-                    )
-                })?;
-                sources.max_shard_minimizers = Some(ParameterSource::Cli);
-                validate_max_shard_minimizers(parsed_max_shard_minimizers)?;
-                max_shard_minimizers = Some(parsed_max_shard_minimizers);
+                let parsed_max_shard_size_bytes = parse_byte_size(&value)?;
+                sources.max_shard_size_bytes = Some(ParameterSource::Cli);
+                max_shard_size_bytes = Some(parsed_max_shard_size_bytes);
             }
             "--tmp" => {
                 let value = args.next().ok_or_else(|| {
@@ -897,8 +931,8 @@ where
         ));
     }
 
-    let max_shard_minimizers: usize = max_shard_minimizers.unwrap_or(DEFAULT_MAX_SHARD_MINIMIZERS);
-    validate_max_shard_minimizers(max_shard_minimizers)?;
+    let max_shard_size_bytes: u64 = max_shard_size_bytes.unwrap_or(DEFAULT_MAX_SHARD_SIZE_BYTES);
+    validate_max_shard_size_bytes(max_shard_size_bytes)?;
 
     let cli_args = CliArgs {
         references,
@@ -924,7 +958,7 @@ where
         mash_confidence,
         mphf_gamma,
         split_n_run,
-        max_shard_minimizers,
+        max_shard_size_bytes,
         shard_filter,
         force,
     };
@@ -937,7 +971,24 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cli_args_from, parse_shard_filter};
+    use super::{parse_byte_size, parse_cli_args_from, parse_shard_filter};
+
+    #[test]
+    fn byte_sizes_accept_raw_and_binary_units() {
+        assert_eq!(parse_byte_size("512").unwrap(), 512);
+        assert_eq!(parse_byte_size("512B").unwrap(), 512);
+        assert_eq!(parse_byte_size("512KiB").unwrap(), 512 * 1024);
+        assert_eq!(parse_byte_size("512MiB").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_byte_size("4GiB").unwrap(), 4 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn byte_sizes_reject_zero_unknown_units_and_overflow() {
+        assert!(parse_byte_size("0").is_err());
+        assert!(parse_byte_size("1GB").is_err());
+        assert!(parse_byte_size("1.5GiB").is_err());
+        assert!(parse_byte_size("18446744073709551615GiB").is_err());
+    }
 
     #[test]
     fn parse_cli_args_from_accepts_an_argument_iterator() {
@@ -998,6 +1049,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unknown argument \"--index-build-mode\""));
+    }
+
+    #[test]
+    fn replaced_max_shard_minimizers_flag_is_rejected() {
+        let error = parse_cli_args_from(["--max-shard-minimizers", "1000"])
+            .err()
+            .expect("replaced --max-shard-minimizers flag should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error
+            .to_string()
+            .contains("unknown argument \"--max-shard-minimizers\""));
     }
 
     #[test]

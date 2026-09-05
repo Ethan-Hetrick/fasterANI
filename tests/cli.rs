@@ -516,7 +516,7 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
         "2",
         "--reference-sketch",
         sharded_prefix.to_str().expect("utf-8 sharded prefix"),
-        "--max-shard-minimizers",
+        "--max-shard-size",
         "1",
     ]);
     assert_eq!(direct_threads_one, sharded_output);
@@ -531,7 +531,7 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
             .expect("manifest shards array")
             .len(),
         2,
-        "max-shard-minimizers=1 should place the two references in separate shards"
+        "max-shard-size=1 should place the two references in separate shards"
     );
 
     let _ = fs::remove_dir_all(temp_dir);
@@ -803,7 +803,7 @@ fn sharded_query_loads_each_reference_shard_once_for_multiple_queries() {
             reference_two,
             "--reference-sketch",
             sketch_prefix,
-            "--max-shard-minimizers",
+            "--max-shard-size",
             "1",
             "--verbose",
             "--quiet",
@@ -1065,7 +1065,7 @@ force = true
         "mash_confidence",
         "mphf_gamma",
         "split_n_run",
-        "max_shard_minimizers",
+        "max_shard_size",
     ] {
         assert!(
             table.contains_key(required_key),

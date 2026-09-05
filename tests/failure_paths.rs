@@ -60,7 +60,7 @@ fn sharded_loader_error_exits_promptly_without_hanging() {
             reference_two.to_str().expect("UTF-8 reference path"),
             "--reference-sketch",
             sketch_prefix.to_str().expect("UTF-8 sketch prefix"),
-            "--max-shard-minimizers",
+            "--max-shard-size",
             "1",
             "--threads",
             "1",

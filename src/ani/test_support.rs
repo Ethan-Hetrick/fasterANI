@@ -2,7 +2,7 @@
 
 use crate::ani::{
     constants::{
-        DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_MINIMIZERS,
+        DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_SIZE_BYTES,
         DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN,
         DEFAULT_WINDOW_SIZE, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
     },
@@ -23,7 +23,7 @@ pub(crate) fn sample_shard_manifest() -> ShardManifest {
         fragment_length: DEFAULT_FRAGMENT_LENGTH,
         min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
         split_n_run: DEFAULT_SPLIT_N_RUN,
-        max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
+        max_shard_size_bytes: DEFAULT_MAX_SHARD_SIZE_BYTES,
         total_references: 2,
         total_reference_contigs: 2,
         total_mapped_reference_length: 6000,
@@ -45,6 +45,7 @@ pub(crate) fn sample_shard_manifest() -> ShardManifest {
             mapped_reference_length: 6000,
             reference_minimizers: 20,
             unique_minimizers: 18,
+            estimated_file_bytes: 560,
             file_bytes: 1,
         }],
     }
