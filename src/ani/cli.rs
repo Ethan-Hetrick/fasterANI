@@ -157,6 +157,10 @@ where
     S: Into<String>,
 {
     let raw_args: Vec<String> = args.into_iter().map(Into::into).collect();
+    if raw_args.is_empty() {
+        eprintln!("{}", usage());
+        return Ok(None);
+    }
     let params_file_path = extract_params_file_path(&raw_args)?;
     let skip_validation = raw_args.iter().any(|arg| arg == "--skip-validation");
     let params_file_config = match params_file_path.as_deref() {

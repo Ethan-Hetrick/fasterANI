@@ -188,6 +188,19 @@ query_name = "from-params"
 }
 
 #[test]
+fn no_arguments_displays_help() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let output = Command::new(exe)
+        .output()
+        .expect("failed to launch fasterANI binary");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
+    assert!(stderr.starts_with("usage: fasterANI"));
+    assert!(stderr.contains("--reference <path>"));
+}
+
+#[test]
 fn help_documents_hash_seed_and_build_only_diagnostic_names_real_flag() {
     let exe = env!("CARGO_BIN_EXE_fasterANI");
     let help_output = Command::new(exe)
