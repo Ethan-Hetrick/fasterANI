@@ -11,9 +11,13 @@ use std::{
 };
 
 use crate::ani::{
-    emit_progress, global_frequency_entry_path, global_frequency_filename, global_frequency_path,
-    MmapFile, ReferenceIndex, ReferenceSketch, RuntimeOptions, ScratchFile, ShardManifest,
-    ShardManifestEntry, SketchOutput, SketchParams,
+    io_util::ScratchFile,
+    mmap::MmapFile,
+    model::{ReferenceIndex, ReferenceSketch, ShardManifest, ShardManifestEntry, SketchParams},
+    runtime::{emit_progress, RuntimeOptions},
+    sketch::{
+        global_frequency_entry_path, global_frequency_filename, global_frequency_path, SketchOutput,
+    },
 };
 
 const GLOBAL_FREQUENCY_MAGIC: &[u8; 8] = b"FANIFRQ1";
@@ -338,7 +342,7 @@ pub(crate) fn build_global_frequency_artifact(
         let shard_runtime_options: RuntimeOptions =
             runtime_options.with_build_progress(generation_id, shard.shard_index)?;
         let sketch: ReferenceSketch = ReferenceSketch::load(
-            &crate::ani::shard_entry_path(prefix, shard),
+            &crate::ani::sketch::serialize::shard_entry_path(prefix, shard),
             params,
             false,
             tmp_dir,
@@ -577,8 +581,9 @@ mod tests {
         merge_all_runs, write_frequency_artifact, write_run, FrequencyRecord, GlobalFrequencyIndex,
     };
     use crate::ani::{
-        global_frequency_filename, ReferenceContigs, ReferenceHitMap, ReferenceIndex,
-        ReferenceSketch, SeedHit,
+        constants::ReferenceHitMap,
+        model::{ReferenceContigs, ReferenceIndex, ReferenceSketch, SeedHit},
+        sketch::global_frequency_filename,
     };
     use std::{env, fs, io, path::PathBuf, sync::Arc, time::SystemTime};
 
@@ -625,7 +630,7 @@ mod tests {
             fs::read(&second_artifact_path)?,
             "global-frequency bytes must not depend on the build generation"
         );
-        let mut manifest = crate::ani::sample_shard_manifest();
+        let mut manifest = crate::ani::test_support::sample_shard_manifest();
         manifest.generation_id = generation.to_string();
         manifest.global_frequency_filename = global_frequency_filename(&prefix, generation);
         manifest.global_frequency_file_bytes = file_bytes;

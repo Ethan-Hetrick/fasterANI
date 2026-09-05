@@ -14,12 +14,17 @@ use noodles::fasta;
 use rayon::prelude::*;
 
 use crate::ani::{
-    emit_progress, expected_minimizer_window_count, open_fasta_reader, slice_as_bytes,
-    split_sequence_ranges, validate_max_shard_minimizers, FastaInput, MinimizerKey, RuntimeOptions,
-    ScratchFile, SeedHit, ShardManifest, ShardPlan, DEFAULT_PARTITION_TARGET_BYTES,
-    ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
-    PARTITIONED_INDEX_MINIMIZER_THRESHOLD, REFERENCE_PROGRESS_INTERVAL,
-    SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
+    constants::{
+        MinimizerKey, DEFAULT_PARTITION_TARGET_BYTES,
+        ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
+        PARTITIONED_INDEX_MINIMIZER_THRESHOLD, REFERENCE_PROGRESS_INTERVAL,
+        SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
+    },
+    io_util::{open_fasta_reader, slice_as_bytes, FastaInput, ScratchFile},
+    minimizer::{expected_minimizer_window_count, split_sequence_ranges},
+    model::{SeedHit, ShardManifest, ShardPlan},
+    runtime::{emit_progress, RuntimeOptions},
+    validation::validate_max_shard_minimizers,
 };
 
 /// User-selectable strategy for building the reference sketch index.
@@ -196,7 +201,8 @@ pub(crate) fn estimate_reference_minimizer_windows(
     window_size: usize,
     split_n_run: usize,
 ) -> io::Result<usize> {
-    let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> = open_fasta_reader(&reference.open)?;
+    let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
+        open_fasta_reader(&reference.input_path)?;
     let mut minimizer_window_count = 0;
 
     for result in reader.records() {
@@ -205,7 +211,7 @@ pub(crate) fn estimate_reference_minimizer_windows(
                 io::ErrorKind::InvalidData,
                 format!(
                     "failed to read FASTA record from reference {}: {err}",
-                    reference.label
+                    reference.output_label
                 ),
             )
         })?;
@@ -605,9 +611,13 @@ unsafe fn compute_8_ids_avx2(records: &[PartitionHitRecord; 8], shift: u32, out:
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        database_build_parallelism, partition_build_plan, partition_id_for_key,
-        plan_shards_from_minimizer_counts, PartitionBuildPlan, PartitionHitRecord,
-        PartitionWriters, SeedHit, ShardPlan, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
+        constants::{MAX_PARTITION_COUNT, MIN_PARTITION_COUNT},
+        model::{SeedHit, ShardPlan},
+        sketch::{
+            database_build_parallelism, partition_build_plan, partition_id_for_key,
+            plan_shards_from_minimizer_counts, PartitionBuildPlan, PartitionHitRecord,
+            PartitionWriters,
+        },
     };
     use std::io;
 

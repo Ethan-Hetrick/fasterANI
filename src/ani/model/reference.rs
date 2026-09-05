@@ -8,8 +8,10 @@ use boomphf::Mphf;
 use serde::{Deserialize, Serialize};
 
 use crate::ani::{
-    default_fragment_length, default_max_shard_minimizers, GlobalFrequencyIndex, IndexBuildMode,
-    MinimizerKey, MmapReferenceContigs, MmapReferenceIndex, ReferenceHitMap,
+    constants::{MinimizerKey, ReferenceHitMap},
+    mmap::{MmapReferenceContigs, MmapReferenceIndex},
+    sketch::{GlobalFrequencyIndex, IndexBuildMode},
+    validation::{default_fragment_length, default_max_shard_minimizers},
 };
 
 /// The FastANI-style algorithm parameters that travel together through sketch

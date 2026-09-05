@@ -11,8 +11,11 @@ use std::{
 };
 
 use crate::ani::{
-    append_path_suffix, compress_file_to_bgzf, sketch_reference_name, FastaInput, MmapFile,
-    ReferenceContigName, ReferenceFile, ScratchFile, ShardManifestEntry,
+    io_util::{
+        append_path_suffix, compress_file_to_bgzf, sketch_reference_name, FastaInput, ScratchFile,
+    },
+    mmap::MmapFile,
+    model::{ReferenceContigName, ReferenceFile, ShardManifestEntry},
 };
 
 const NAME_SIDECAR_MAGIC: [u8; 8] = *b"FANINAM\0";
@@ -752,7 +755,7 @@ pub(crate) fn reference_list_checksum(references: &[FastaInput]) -> u64 {
     let mut hash: u64 = FNV_OFFSET;
     for reference in references {
         for byte in reference
-            .label
+            .output_label
             .as_bytes()
             .iter()
             .copied()
@@ -835,8 +838,9 @@ mod tests {
         SketchOutput,
     };
     use crate::ani::{
-        manifest_path, shard_filename, shard_path, sketch_reference_name, ReferenceContigName,
-        ReferenceFile,
+        io_util::sketch_reference_name,
+        model::{ReferenceContigName, ReferenceFile},
+        sketch::{manifest_path, shard_filename, shard_path},
     };
     use std::{
         env, fs, io,

@@ -1,6 +1,9 @@
 //! Validation and default-value helpers for CLI and runtime parameters.
 
-use crate::ani::{AniError, DEFAULT_FRAGMENT_LENGTH, DEFAULT_MAX_SHARD_MINIMIZERS};
+use crate::ani::{
+    constants::{DEFAULT_FRAGMENT_LENGTH, DEFAULT_MAX_SHARD_MINIMIZERS},
+    error::AniError,
+};
 
 pub(crate) fn default_fragment_length() -> u32 {
     DEFAULT_FRAGMENT_LENGTH

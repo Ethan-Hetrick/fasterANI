@@ -6,9 +6,12 @@ use noodles::fasta;
 use rayon::prelude::*;
 
 use crate::ani::{
-    canonical_minimizers_with_positions, canonical_minimizers_with_super_kmers,
-    mapped_length_from_fragment_ranges, open_fasta_reader, split_sequence_ranges, FastaInput,
-    ReferenceMinimizer, SketchParams,
+    io_util::{open_fasta_reader, FastaInput},
+    minimizer::{
+        canonical_minimizers_with_positions, canonical_minimizers_with_super_kmers,
+        mapped_length_from_fragment_ranges, split_sequence_ranges,
+    },
+    model::{ReferenceMinimizer, SketchParams},
 };
 
 // Keep enough work in flight to make a multi-record FASTA useful to Rayon without retaining an
@@ -51,7 +54,7 @@ fn invalid_reference_data(
         io::ErrorKind::InvalidData,
         format!(
             "reference {} record {:?}: {detail}",
-            reference.label, record_name
+            reference.output_label, record_name
         ),
     )
 }
@@ -331,11 +334,11 @@ pub(crate) fn for_each_extracted_reference_segment<F>(
 where
     F: FnMut(ExtractedReferenceSegment) -> io::Result<()>,
 {
-    let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> = open_fasta_reader(&reference.open)
-        .map_err(|err| {
+    let mut reader: fasta::io::Reader<Box<dyn io::BufRead>> =
+        open_fasta_reader(&reference.input_path).map_err(|err| {
             io::Error::new(
                 err.kind(),
-                format!("failed to open reference {}: {err}", reference.label),
+                format!("failed to open reference {}: {err}", reference.output_label),
             )
         })?;
     let mut records = reader.records();
@@ -354,7 +357,10 @@ where
             record_number = record_number.checked_add(1).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("reference {} has too many FASTA records", reference.label),
+                    format!(
+                        "reference {} has too many FASTA records",
+                        reference.output_label
+                    ),
                 )
             })?;
             let record: fasta::Record = result.map_err(|err| {
@@ -362,7 +368,7 @@ where
                     io::ErrorKind::InvalidData,
                     format!(
                         "failed to read FASTA record {record_number} from reference {}: {err}",
-                        reference.label
+                        reference.output_label
                     ),
                 )
             })?;
@@ -373,20 +379,26 @@ where
                         io::ErrorKind::InvalidData,
                         format!(
                             "reference {} record length exceeds u64: {err}",
-                            reference.label
+                            reference.output_label
                         ),
                     )
                 })?)
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("reference {} original length exceeds u64", reference.label),
+                        format!(
+                            "reference {} original length exceeds u64",
+                            reference.output_label
+                        ),
                     )
                 })?;
             batch_bases = batch_bases.checked_add(sequence.len()).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("reference {} batch size exceeds usize", reference.label),
+                    format!(
+                        "reference {} batch size exceeds usize",
+                        reference.output_label
+                    ),
                 )
             })?;
             batch.push(PendingRecord {
@@ -421,7 +433,10 @@ where
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("reference {} mapped length exceeds u64", reference.label),
+                        format!(
+                            "reference {} mapped length exceeds u64",
+                            reference.output_label
+                        ),
                     )
                 })?;
             for segment in extracted_record.segments {
@@ -439,7 +454,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ani::{
+    use crate::ani::constants::{
         DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED,
         DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
     };

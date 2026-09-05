@@ -12,8 +12,11 @@ use std::{
 use boomphf::Mphf;
 
 use crate::ani::{
-    ContigRecord, MinimizerKey, ReferenceContigs, ReferenceIndex, ReferenceMinimizer,
-    ReferenceSketch, SeedHit,
+    constants::MinimizerKey,
+    model::{
+        ContigRecord, ReferenceContigs, ReferenceIndex, ReferenceMinimizer, ReferenceSketch,
+        SeedHit,
+    },
 };
 
 /// Memory-mapped minimal-perfect-hash index and the arrays it addresses.

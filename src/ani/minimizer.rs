@@ -6,7 +6,7 @@ use seq_hash::NtHasher;
 use simd_minimizers::canonical_minimizers;
 use simd_minimizers::packed_seq::{PackedNSeqVec, Seq};
 
-use crate::ani::{MinimizerKey, ReferenceMinimizer};
+use crate::ani::{constants::MinimizerKey, model::ReferenceMinimizer};
 
 /// Sliding minimizer set used while scoring candidate reference windows.
 #[derive(Default)]
@@ -540,13 +540,19 @@ pub(crate) fn fastani_compatible_fragment_mode(
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        canonical_minimizer_observation, canonical_minimizers_with_positions,
-        estimate_reference_minimizer_windows, estimate_selected_minimizers_from_windows,
-        expected_minimizer_window_count, fastani_compatible_fragment_mode,
-        mapped_length_from_fragment_ranges, query_fragment_ranges, repeated_acgt,
-        select_seed_minimizers, split_sequence_ranges, usable_minimizer_window_count, FastaInput,
-        MinimizerKey, MinimizerObservation, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
-        DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
+        constants::{
+            MinimizerKey, DEFAULT_FRAGMENT_LENGTH, DEFAULT_FRAGMENT_STRIDE,
+            DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
+        },
+        io_util::FastaInput,
+        minimizer::{
+            canonical_minimizer_observation, canonical_minimizers_with_positions,
+            expected_minimizer_window_count, fastani_compatible_fragment_mode,
+            mapped_length_from_fragment_ranges, query_fragment_ranges, select_seed_minimizers,
+            split_sequence_ranges, usable_minimizer_window_count, MinimizerObservation,
+        },
+        sketch::{estimate_reference_minimizer_windows, estimate_selected_minimizers_from_windows},
+        test_support::repeated_acgt,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
 

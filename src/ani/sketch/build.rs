@@ -9,13 +9,20 @@ use std::{
 };
 
 use crate::ani::{
-    emit_progress, for_each_extracted_reference_segment, sketch_reference_name, FastaInput,
-    MinimizerKey, ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile,
-    ReferenceIndex, ReferenceMinimizer, ReferenceSketch, RuntimeOptions, SeedHit, SketchParams,
-    TransientReferenceIndex, REFERENCE_PROGRESS_INTERVAL,
+    constants::{MinimizerKey, REFERENCE_PROGRESS_INTERVAL},
+    io_util::{sketch_reference_name, FastaInput},
+    model::{
+        ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceIndex,
+        ReferenceMinimizer, ReferenceSketch, SeedHit, SketchParams, TransientReferenceIndex,
+    },
+    runtime::{emit_progress, RuntimeOptions},
+    sketch::for_each_extracted_reference_segment,
 };
 #[cfg(debug_assertions)]
-use crate::ani::{memory_mib, reference_build_struct_bytes, ContigRecord, ReferenceMemoryEstimate};
+use crate::ani::{
+    model::{ContigRecord, ReferenceMemoryEstimate},
+    runtime::{memory_mib, reference_build_struct_bytes},
+};
 use rayon::prelude::*;
 
 struct FileBuild {
@@ -38,7 +45,7 @@ fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::R
                 io::ErrorKind::InvalidData,
                 format!(
                     "reference {} record {:?}: contig id exceeds u32: {err}",
-                    reference.label, segment.record_name
+                    reference.output_label, segment.record_name
                 ),
             )
         })?;
@@ -61,7 +68,7 @@ fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::R
                     io::ErrorKind::InvalidData,
                     format!(
                         "reference {} minimizer count exceeds usize",
-                        reference.label
+                        reference.output_label
                     ),
                 )
             })?;
@@ -80,7 +87,7 @@ fn collect_reference_file(reference: &FastaInput, params: SketchParams) -> io::R
 
     Ok(FileBuild {
         file: ReferenceFile {
-            path: sketch_reference_name(&reference.label),
+            path: sketch_reference_name(&reference.output_label),
             mapped_length: extraction.mapped_length,
             original_length: extraction.original_length,
         },
@@ -426,9 +433,13 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        FastaInput, ReferenceIndex, ReferenceSketch, RuntimeOptions, SketchParams,
-        DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED,
-        DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+        constants::{
+            DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED,
+            DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+        },
+        io_util::FastaInput,
+        model::{ReferenceIndex, ReferenceSketch, SketchParams},
+        runtime::RuntimeOptions,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
 

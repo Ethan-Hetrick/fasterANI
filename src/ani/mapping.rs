@@ -6,11 +6,17 @@ use noodles::fasta;
 use rayon::prelude::*;
 
 use crate::ani::{
-    binomial_survival, estimate_relaxed_minimum_shared_minimizers, query_fragment_ranges,
-    query_fragment_sketch, split_sequence_ranges, t_cdf_approx, AniComputation,
-    AniDistributionStats, AniSummary, ContigAniSummary, MappingMetrics, MappingOutput,
-    MappingResult, MappingResultKey, MappingScratch, MinimizerKey, QueryFile, QueryFragment,
-    QueryFragmentSketch, ReferenceMinimizer, ReferenceSketch,
+    constants::MinimizerKey,
+    mash::{binomial_survival, estimate_relaxed_minimum_shared_minimizers, t_cdf_approx},
+    metrics::{MappingMetrics, MappingOutput},
+    minimizer::{
+        query_fragment_ranges, query_fragment_sketch, split_sequence_ranges, QueryFragmentSketch,
+    },
+    model::{
+        AniComputation, AniDistributionStats, AniSummary, ContigAniSummary, MappingResult,
+        MappingResultKey, MappingScratch, QueryFile, QueryFragment, ReferenceMinimizer,
+        ReferenceSketch,
+    },
 };
 
 /// Run-scoped executor reused by every query/reference mapping operation.
@@ -792,7 +798,7 @@ mod tests {
         checked_query_coordinate, compact_reciprocal_best_mappings, compute_distribution_stats,
         final_ani_computation,
     };
-    use crate::ani::{AniSummary, MappingResult, QueryFile, QueryFragment};
+    use crate::ani::model::{AniSummary, MappingResult, QueryFile, QueryFragment};
     use std::io;
 
     fn assert_close(actual: f64, expected: f64) {

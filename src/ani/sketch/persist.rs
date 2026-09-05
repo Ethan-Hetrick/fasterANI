@@ -10,15 +10,24 @@ use std::{
 };
 
 use crate::ani::{
-    align_up, checked_section_end, decompress_to_scratch, emit_runtime_progress, is_gzip_path,
-    sidecar_entry_path, slice_as_bytes, write_name_sidecar, write_padding, CachedReferenceMetadata,
-    ContigRecord, MinimizerKey, MmapFile, MmapReferenceContigs, MmapReferenceIndex, NameSidecar,
-    ReferenceContigName, ReferenceContigs, ReferenceFile, ReferenceHitMap, ReferenceIndex,
-    ReferenceMinimizer, ReferenceSketch, RuntimeOptions, ScratchFile, SeedHit, SketchOutput,
-    SketchParams, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
+    constants::{
+        MinimizerKey, ReferenceHitMap, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC,
+        SKETCH_VERSION,
+    },
+    io_util::{
+        align_up, checked_section_end, decompress_to_scratch, is_gzip_path, slice_as_bytes,
+        write_padding, ScratchFile,
+    },
+    mmap::{MmapFile, MmapReferenceContigs, MmapReferenceIndex},
+    model::{
+        CachedReferenceMetadata, ContigRecord, ReferenceContigName, ReferenceContigs,
+        ReferenceFile, ReferenceIndex, ReferenceMinimizer, ReferenceSketch, SeedHit, SketchParams,
+    },
+    runtime::{emit_runtime_progress, RuntimeOptions},
+    sketch::{sidecar_entry_path, write_name_sidecar, NameSidecar, SketchOutput},
 };
 #[cfg(test)]
-use crate::ani::{memory_mib, sketch_reference_name};
+use crate::ani::{io_util::sketch_reference_name, runtime::memory_mib};
 use boomphf::Mphf;
 
 impl ReferenceSketch {
@@ -222,7 +231,8 @@ impl ReferenceSketch {
 
             let contigs_done: usize = contig_index + 1;
             if runtime_options.progress_enabled
-                && (contigs_done.is_multiple_of(crate::ani::SKETCH_CONTIG_PACK_PROGRESS_INTERVAL)
+                && (contigs_done
+                    .is_multiple_of(crate::ani::constants::SKETCH_CONTIG_PACK_PROGRESS_INTERVAL)
                     || contigs_done == contigs.len())
             {
                 emit_runtime_progress(
@@ -924,11 +934,16 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        slice_as_bytes, ContigRecord, ReferenceContig, ReferenceContigName, ReferenceContigs,
-        ReferenceFile, ReferenceHitMap, ReferenceIndex, ReferenceMinimizer, ReferenceSketch,
-        RuntimeOptions, ScratchFile, SeedHit, SketchParams, DEFAULT_FRAGMENT_LENGTH,
-        DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH,
-        DEFAULT_WINDOW_SIZE,
+        constants::{
+            ReferenceHitMap, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
+            DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_WINDOW_SIZE,
+        },
+        io_util::{slice_as_bytes, ScratchFile},
+        model::{
+            ContigRecord, ReferenceContig, ReferenceContigName, ReferenceContigs, ReferenceFile,
+            ReferenceIndex, ReferenceMinimizer, ReferenceSketch, SeedHit, SketchParams,
+        },
+        runtime::RuntimeOptions,
     };
     use std::{
         env, fs, io,

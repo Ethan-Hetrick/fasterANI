@@ -2,7 +2,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::ani::SeedHit;
+use crate::ani::model::SeedHit;
 
 pub(crate) const DEFAULT_KMER_SIZE: usize = 16;
 pub(crate) const DEFAULT_WINDOW_SIZE: usize = 24;

@@ -13,15 +13,25 @@ use boomphf::Mphf;
 use rayon::prelude::*;
 
 use crate::ani::{
-    align_up, checked_section_end, effective_index_build_mode, emit_runtime_progress,
-    for_each_extracted_reference_segment, memory_mib, partition_build_plan, slice_as_bytes,
-    slice_as_bytes_mut, write_name_sidecar, write_padding, CachedReferenceMetadata, ContigRecord,
-    FastaInput, GroupedKeyRecord, IndexBuildMode, MinimizerKey, PartitionBuildPlan,
-    PartitionGroupResult, PartitionHitRecord, PartitionWriters, ReferenceContigName,
-    ReferenceExtractionStats, ReferenceFile, ReferenceHitMap, ReferenceMinimizer, ReferenceSketch,
-    RuntimeOptions, ScratchFile, SeedHit, SketchBuildStats, SketchOutput, SketchParams,
-    PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL, SKETCH_KEY_PACK_PROGRESS_INTERVAL,
-    SKETCH_MAGIC, SKETCH_VERSION,
+    constants::{
+        MinimizerKey, ReferenceHitMap, PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL,
+        SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
+    },
+    io_util::{
+        align_up, checked_section_end, slice_as_bytes, slice_as_bytes_mut, write_padding,
+        FastaInput, ScratchFile,
+    },
+    model::{
+        CachedReferenceMetadata, ContigRecord, ReferenceContigName, ReferenceFile,
+        ReferenceMinimizer, ReferenceSketch, SeedHit, SketchBuildStats, SketchParams,
+    },
+    runtime::{emit_runtime_progress, memory_mib, RuntimeOptions},
+    sketch::{
+        effective_index_build_mode, for_each_extracted_reference_segment, partition_build_plan,
+        write_name_sidecar, GroupedKeyRecord, IndexBuildMode, PartitionBuildPlan,
+        PartitionGroupResult, PartitionHitRecord, PartitionWriters, ReferenceExtractionStats,
+        SketchOutput,
+    },
 };
 
 const GROUPED_KEY_PACK_CHUNK: usize = 1_000_000;
@@ -153,7 +163,7 @@ impl ReferenceSketch {
                     io::ErrorKind::InvalidData,
                     format!(
                         "reference {} file id exceeds sketch cache limit: {err}",
-                        reference.label
+                        reference.output_label
                     ),
                 )
             })?;
@@ -167,7 +177,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} record {:?}: contig id exceeds sketch cache limit: {err}",
-                                    reference.label, segment.record_name
+                                    reference.output_label, segment.record_name
                                 ),
                             )
                         })?;
@@ -186,7 +196,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} minimizer offset exceeds u64: {err}",
-                                    reference.label
+                                    reference.output_label
                                 ),
                             )
                         })?;
@@ -196,7 +206,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} record {:?}: contig has too many minimizers for sketch cache: {err}",
-                                    reference.label, segment.record_name
+                                    reference.output_label, segment.record_name
                                 ),
                             )
                         })?;
@@ -209,7 +219,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} minimizer count exceeds usize",
-                                    reference.label
+                                    reference.output_label
                                 ),
                             )
                         })?;
@@ -218,7 +228,10 @@ impl ReferenceSketch {
                         .ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("reference {} hit count exceeds usize", reference.label),
+                                format!(
+                                    "reference {} hit count exceeds usize",
+                                    reference.output_label
+                                ),
                             )
                         })?;
                     contig_records.push(ContigRecord {
@@ -237,7 +250,7 @@ impl ReferenceSketch {
             )?;
 
             files.push(ReferenceFile {
-                path: reference.label.clone(),
+                path: reference.output_label.clone(),
                 mapped_length: extraction.mapped_length,
                 original_length: extraction.original_length,
             });
@@ -357,7 +370,7 @@ impl ReferenceSketch {
                     io::ErrorKind::InvalidData,
                     format!(
                         "reference {} file id exceeds sketch cache limit: {err}",
-                        reference.label
+                        reference.output_label
                     ),
                 )
             })?;
@@ -371,7 +384,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} record {:?}: contig id exceeds sketch cache limit: {err}",
-                                    reference.label, segment.record_name
+                                    reference.output_label, segment.record_name
                                 ),
                             )
                         })?;
@@ -398,7 +411,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} minimizer offset exceeds u64: {err}",
-                                    reference.label
+                                    reference.output_label
                                 ),
                             )
                         })?;
@@ -408,7 +421,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} record {:?}: contig has too many minimizers for sketch cache: {err}",
-                                    reference.label, segment.record_name
+                                    reference.output_label, segment.record_name
                                 ),
                             )
                         })?;
@@ -421,7 +434,7 @@ impl ReferenceSketch {
                                 io::ErrorKind::InvalidData,
                                 format!(
                                     "reference {} minimizer count exceeds usize",
-                                    reference.label
+                                    reference.output_label
                                 ),
                             )
                         })?;
@@ -430,7 +443,10 @@ impl ReferenceSketch {
                         .ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("reference {} hit count exceeds usize", reference.label),
+                                format!(
+                                    "reference {} hit count exceeds usize",
+                                    reference.output_label
+                                ),
                             )
                         })?;
                     contig_records.push(ContigRecord {
@@ -449,7 +465,7 @@ impl ReferenceSketch {
             )?;
 
             files.push(ReferenceFile {
-                path: reference.label.clone(),
+                path: reference.output_label.clone(),
                 mapped_length: extraction.mapped_length,
                 original_length: extraction.original_length,
             });
@@ -1007,10 +1023,14 @@ impl ReferenceSketch {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        FastaInput, IndexBuildMode, NameSidecar, ReferenceMinimizer, ReferenceSketch,
-        RuntimeOptions, SketchBuildStats, SketchParams, DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE,
-        DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN,
-        DEFAULT_WINDOW_SIZE,
+        constants::{
+            DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MINIMIZER_HASH_SEED,
+            DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+        },
+        io_util::FastaInput,
+        model::{ReferenceMinimizer, ReferenceSketch, SketchBuildStats, SketchParams},
+        runtime::RuntimeOptions,
+        sketch::{IndexBuildMode, NameSidecar},
     };
     use std::{
         env, fs, io,

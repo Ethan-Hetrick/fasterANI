@@ -4,9 +4,12 @@
 use std::{env, mem::size_of};
 use std::{fs, io, time::Instant};
 
-use crate::ani::{CliArgs, DEFAULT_MPHF_GAMMA};
+use crate::ani::{cli::CliArgs, constants::DEFAULT_MPHF_GAMMA};
 #[cfg(debug_assertions)]
-use crate::ani::{MinimizerKey, ReferenceMinimizer, SeedHit};
+use crate::ani::{
+    constants::MinimizerKey,
+    model::{ReferenceMinimizer, SeedHit},
+};
 
 /// Runtime controls shared by long-running reference build and sketch operations.
 #[derive(Clone, Copy)]

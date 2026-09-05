@@ -13,15 +13,21 @@ use std::{
 use rayon::prelude::*;
 
 use crate::ani::{
-    build_generation_id, build_global_frequency_artifact, database_build_parallelism,
-    effective_index_build_mode, emit_progress, estimate_partitioned_shard_memory_bytes,
-    legacy_sketch_path, manifest_path, memory_mib, plan_shards_by_minimizers,
-    reference_list_checksum, shard_entry_path, shard_filename, shard_manifest_compatibility_error,
-    shard_path, sketch_reference_name, unix_timestamp_seconds, validate_max_shard_minimizers,
-    write_bytes_atomically, FastaInput, GlobalFrequencyArtifactStats, GlobalFrequencyIndex,
-    IndexBuildMode, ReferenceSketch, RuntimeOptions, ShardBuildResult, ShardManifest,
-    ShardManifestEntry, ShardPlan, ShardedBuildOptions, SketchBuildStats, SketchParams,
-    SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
+    constants::{SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION},
+    io_util::{sketch_reference_name, FastaInput},
+    model::{
+        ReferenceSketch, ShardBuildResult, ShardManifest, ShardManifestEntry, ShardPlan,
+        ShardedBuildOptions, SketchBuildStats, SketchParams,
+    },
+    runtime::{emit_progress, memory_mib, RuntimeOptions},
+    sketch::{
+        build_generation_id, build_global_frequency_artifact, database_build_parallelism,
+        effective_index_build_mode, estimate_partitioned_shard_memory_bytes, legacy_sketch_path,
+        manifest_path, plan_shards_by_minimizers, reference_list_checksum, shard_entry_path,
+        shard_filename, shard_manifest_compatibility_error, shard_path, unix_timestamp_seconds,
+        write_bytes_atomically, GlobalFrequencyArtifactStats, GlobalFrequencyIndex, IndexBuildMode,
+    },
+    validation::validate_max_shard_minimizers,
 };
 
 /// Reference database opened by the CLI, either legacy single-sketch or manifest-backed shards.
@@ -102,7 +108,7 @@ impl SketchDatabase {
                             .iter()
                             .zip(&sketch.files)
                             .any(|(reference, cached)| {
-                                sketch_reference_name(&reference.label) != cached.path
+                                sketch_reference_name(&reference.output_label) != cached.path
                             }))
                 {
                     return Err(io::Error::new(
@@ -511,12 +517,20 @@ impl SketchDatabase {
 #[cfg(test)]
 mod tests {
     use crate::ani::{
-        append_path_suffix, global_frequency_path, manifest_path, reference_list_checksum,
-        sample_shard_manifest, shard_entry_path, shard_manifest_compatibility_error, shard_path,
-        FastaInput, IndexBuildMode, NameSidecar, ReferenceSketch, RuntimeOptions, ShardManifest,
-        ShardedBuildOptions, SketchDatabase, SketchParams, DEFAULT_FRAGMENT_LENGTH,
-        DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_MINIMIZERS, DEFAULT_MINIMIZER_HASH_SEED,
-        DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
+        constants::{
+            DEFAULT_FRAGMENT_LENGTH, DEFAULT_KMER_SIZE, DEFAULT_MAX_SHARD_MINIMIZERS,
+            DEFAULT_MINIMIZER_HASH_SEED, DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN,
+            DEFAULT_WINDOW_SIZE,
+        },
+        io_util::{append_path_suffix, FastaInput},
+        model::{ReferenceSketch, ShardManifest, ShardedBuildOptions, SketchParams},
+        runtime::RuntimeOptions,
+        sketch::{
+            global_frequency_path, manifest_path, reference_list_checksum, shard_entry_path,
+            shard_manifest_compatibility_error, shard_path, IndexBuildMode, NameSidecar,
+            SketchDatabase,
+        },
+        test_support::sample_shard_manifest,
     };
     use std::{
         env, fs, io,

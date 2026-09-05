@@ -1,9 +1,15 @@
 //! Query-time candidate-region discovery and scoring against a `ReferenceSketch`.
 
 use crate::ani::{
-    fastani_mash_distance, lower_bound_minimizer_position, mash_distance_lower_bound,
-    MappingMetrics, MappingResult, MinimizerKey, QueryFragment, ReferenceCandidateRegion,
-    ReferenceMinimizer, ReferenceSketch, SeedHit, SlidingSketchCounter,
+    constants::MinimizerKey,
+    mapping::lower_bound_minimizer_position,
+    mash::{fastani_mash_distance, mash_distance_lower_bound},
+    metrics::MappingMetrics,
+    minimizer::SlidingSketchCounter,
+    model::{
+        MappingResult, QueryFragment, ReferenceCandidateRegion, ReferenceMinimizer,
+        ReferenceSketch, SeedHit,
+    },
 };
 
 impl ReferenceSketch {

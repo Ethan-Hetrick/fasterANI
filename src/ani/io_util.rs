@@ -65,22 +65,22 @@ pub(crate) fn is_stdin_path(path: &str) -> bool {
 /// A FASTA input: an on-disk path, or `-` / `/dev/stdin` for a streamed reader.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FastaInput {
-    pub(crate) open: String,
-    pub(crate) label: String,
+    pub(crate) input_path: String,
+    pub(crate) output_label: String,
 }
 
 impl FastaInput {
     pub(crate) fn from_path(path: String) -> Self {
         Self {
-            label: path.clone(),
-            open: path,
+            output_label: path.clone(),
+            input_path: path,
         }
     }
 
     pub(crate) fn from_stdin(label: Option<String>) -> Self {
         Self {
-            open: "-".to_string(),
-            label: label.unwrap_or_else(|| "-".to_string()),
+            input_path: "-".to_string(),
+            output_label: label.unwrap_or_else(|| "-".to_string()),
         }
     }
 }

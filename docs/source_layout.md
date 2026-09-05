@@ -20,7 +20,7 @@ src/
 
   ani/
 
-    [mod.rs](http://mod.rs)            module wiring + re-exports + pub use run
+    [mod.rs](http://mod.rs)            private module wiring + public `run` entry points
 
     [constants.rs](http://constants.rs)      algorithm/format constants + type aliases
 
@@ -70,9 +70,19 @@ src/
 
       effective_config.rs              effective-configuration provenance + startup rendering
 
+      help.rs                          command-line help text
+
       input.rs                         FASTA input validation + path/list resolution
 
-    [pipeline.rs](http://pipeline.rs)       output orchestration + run()
+    [pipeline.rs](http://pipeline.rs)       top-level run orchestration
+
+    pipeline/
+
+      query_batch.rs                   query preparation, spooling, batching, and accounting
+
+      reporting.rs                     result aggregation and TSV output
+
+      sharded.rs                       sharded-sketch loading and query execution
 
     test_[support.rs](http://support.rs)   shared unit-test fixtures (debug/test only)
 
