@@ -347,7 +347,6 @@ pub(crate) fn build_global_frequency_artifact(
             &crate::ani::sketch::serialize::shard_entry_path(prefix, shard),
             params,
             false,
-            tmp_dir,
             shard_runtime_options,
         )?;
         let ReferenceIndex::Mphf(index) = &sketch.index else {
@@ -509,7 +508,7 @@ fn write_frequency_artifact(
     }
     let mut histogram: Vec<(u64, u64)> = histogram.into_iter().collect();
     histogram.sort_unstable_by_key(|&(frequency, _)| Reverse(frequency));
-    let mut output: SketchOutput = SketchOutput::create(path, None, false, 1)?;
+    let mut output: SketchOutput = SketchOutput::create(path)?;
     let writer: &mut BufWriter<fs::File> = output.writer_mut()?;
     writer.write_all(GLOBAL_FREQUENCY_MAGIC)?;
     writer.write_all(&GLOBAL_FREQUENCY_FORMAT_VERSION.to_le_bytes())?;

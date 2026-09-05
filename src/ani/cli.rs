@@ -46,7 +46,6 @@ pub(crate) struct CliArgs {
     pub(crate) out_path: Option<PathBuf>,
     pub(crate) mapping_stats_path: Option<PathBuf>,
     pub(crate) per_contig: bool,
-    pub(crate) bgzip: bool,
     pub(crate) emit_header: bool,
     pub(crate) verbose: bool,
     pub(crate) quiet: bool,
@@ -179,7 +178,6 @@ where
     let mut out_path: Option<PathBuf> = None;
     let mut mapping_stats_path: Option<PathBuf> = None;
     let mut per_contig: bool = false;
-    let mut bgzip: bool = false;
     let mut emit_header: bool = false;
     let mut verbose: bool = false;
     let mut quiet: bool = false;
@@ -283,10 +281,6 @@ where
     if let Some(mapping_stats) = params_file_config.mapping_stats.as_ref() {
         mapping_stats_path = Some(resolve_path_from_base(mapping_stats, params_file_base_dir)?);
         sources.mapping_stats = Some(ParameterSource::ParamsFile);
-    }
-    if let Some(value) = params_file_config.bgzip {
-        bgzip = value;
-        sources.bgzip = Some(ParameterSource::ParamsFile);
     }
     if let Some(value) = params_file_config.header {
         emit_header = value;
@@ -468,10 +462,6 @@ where
                 })?;
                 sketch_path = Some(PathBuf::from(value));
                 sources.reference_sketch = Some(ParameterSource::Cli);
-            }
-            "--bgzip" => {
-                bgzip = true;
-                sources.bgzip = Some(ParameterSource::Cli);
             }
             "--header" => {
                 emit_header = true;
@@ -933,7 +923,6 @@ where
         out_path,
         mapping_stats_path,
         per_contig,
-        bgzip,
         emit_header,
         verbose,
         quiet,
@@ -1003,6 +992,16 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("--threads must be at least 1"));
+    }
+
+    #[test]
+    fn removed_bgzip_flag_is_rejected() {
+        let error = parse_cli_args_from(["--bgzip"])
+            .err()
+            .expect("removed --bgzip flag should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("unknown argument \"--bgzip\""));
     }
 
     #[test]

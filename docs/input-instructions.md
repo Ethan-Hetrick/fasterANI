@@ -113,9 +113,6 @@ mash_confidence = 0.9
 
 
 # Sketch database / sharding
-# Enable when reading a bgzip-compressed reference sketch.
-bgzip = false
-
 # MPHF size/build-time tradeoff for saved sketches. Must be finite and > 1.01.
 mphf_gamma = 10.0
 

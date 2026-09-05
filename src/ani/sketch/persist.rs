@@ -14,10 +14,7 @@ use crate::ani::{
         MinimizerKey, ReferenceHitMap, SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC,
         SKETCH_VERSION,
     },
-    io_util::{
-        align_up, checked_section_end, decompress_to_scratch, is_gzip_path, slice_as_bytes,
-        write_padding, ScratchFile,
-    },
+    io_util::{align_up, checked_section_end, slice_as_bytes, write_padding, ScratchFile},
     mmap::{MmapFile, MmapReferenceContigs, MmapReferenceIndex},
     model::reference::{
         CachedReferenceMetadata, ContigRecord, ReferenceContigName, ReferenceContigs,
@@ -342,12 +339,7 @@ impl ReferenceSketch {
             align_of::<ReferenceMinimizer>(),
         );
 
-        let mut sketch_output: SketchOutput = SketchOutput::create(
-            path,
-            tmp_dir,
-            false,
-            runtime_options.effective_output_threads(),
-        )?;
+        let mut sketch_output: SketchOutput = SketchOutput::create(path)?;
         let mut writer: &mut BufWriter<fs::File> = sketch_output.writer_mut()?;
         writer.write_all(SKETCH_MAGIC)?;
         writer.write_all(&(metadata_bytes.len() as u64).to_le_bytes())?;
@@ -428,7 +420,6 @@ impl ReferenceSketch {
         path: &Path,
         params: SketchParams,
         load_contig_names: bool,
-        tmp_dir: Option<&Path>,
         runtime_options: RuntimeOptions,
     ) -> io::Result<Self> {
         let SketchParams {
@@ -448,24 +439,7 @@ impl ReferenceSketch {
                 load_start,
             );
         }
-        let decompressed_sketch: Option<ScratchFile> = if is_gzip_path(path) {
-            if runtime_options.progress_enabled {
-                emit_runtime_progress(
-                    runtime_options,
-                    "sketch_load",
-                    &format!("event=decompress_start\tpath={}", path.display()),
-                    load_start,
-                );
-            }
-            Some(decompress_to_scratch(path, tmp_dir, "decompressed-sketch")?)
-        } else {
-            None
-        };
-        let mmap_path: &Path = decompressed_sketch
-            .as_ref()
-            .map_or(path, |scratch| scratch.path.as_path());
-
-        let mut file: fs::File = fs::File::open(mmap_path)?;
+        let mut file: fs::File = fs::File::open(path)?;
         let mut magic: [u8; 8] = [0u8; 8];
         file.read_exact(&mut magic)?;
         if &magic != SKETCH_MAGIC {
@@ -492,7 +466,7 @@ impl ReferenceSketch {
             io::Error::new(io::ErrorKind::InvalidData, "metadata length overflow")
         })?;
 
-        let mmap: Arc<MmapFile> = Arc::new(MmapFile::open(mmap_path)?);
+        let mmap: Arc<MmapFile> = Arc::new(MmapFile::open(path)?);
         let bytes: &[u8] = mmap.as_slice();
         if metadata_end > bytes.len() {
             return Err(io::Error::new(
@@ -678,8 +652,6 @@ impl ReferenceSketch {
         contig_names: Vec<ReferenceContigName>,
         reference_minimizer_count: usize,
         reference_minimizer_scratch: &ScratchFile,
-        tmp_dir: Option<&Path>,
-        bgzip: bool,
         runtime_options: RuntimeOptions,
     ) -> io::Result<()> {
         let SketchParams {
@@ -862,12 +834,7 @@ impl ReferenceSketch {
             align_of::<ReferenceMinimizer>(),
         );
 
-        let mut sketch_output: SketchOutput = SketchOutput::create(
-            path,
-            tmp_dir,
-            bgzip,
-            runtime_options.effective_output_threads(),
-        )?;
+        let mut sketch_output: SketchOutput = SketchOutput::create(path)?;
         let mut writer: &mut BufWriter<fs::File> = sketch_output.writer_mut()?;
         writer.write_all(SKETCH_MAGIC)?;
         writer.write_all(&(metadata_bytes.len() as u64).to_le_bytes())?;
@@ -1033,13 +1000,10 @@ mod tests {
                 }],
                 minimizers.len(),
                 &reference_minimizer_scratch,
-                None,
-                false,
                 RuntimeOptions::default(),
             )?;
 
-            let loaded =
-                ReferenceSketch::load(&path, params, true, None, RuntimeOptions::default())?;
+            let loaded = ReferenceSketch::load(&path, params, true, RuntimeOptions::default())?;
             for minimizer in &minimizers {
                 assert_eq!(
                     loaded.index.get(&minimizer.hash),
@@ -1051,15 +1015,10 @@ mod tests {
                 minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED.wrapping_add(1),
                 ..params
             };
-            let error = ReferenceSketch::load(
-                &path,
-                mismatched_seed,
-                false,
-                None,
-                RuntimeOptions::default(),
-            )
-            .err()
-            .expect("mismatched minimizer hash seed must be rejected");
+            let error =
+                ReferenceSketch::load(&path, mismatched_seed, false, RuntimeOptions::default())
+                    .err()
+                    .expect("mismatched minimizer hash seed must be rejected");
             assert!(error.to_string().contains("minimizer_hash_seed"));
 
             drop(loaded);
@@ -1152,7 +1111,6 @@ mod tests {
                 split_n_run: 0,
             },
             true,
-            None,
             RuntimeOptions::default(),
         )?;
         let loaded_contig_names: &[ReferenceContigName] =

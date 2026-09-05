@@ -46,7 +46,6 @@ impl ReferenceSketch {
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
-        bgzip: bool,
         estimated_minimizers: usize,
         index_build_mode: IndexBuildMode,
         runtime_options: RuntimeOptions,
@@ -67,7 +66,6 @@ impl ReferenceSketch {
                     params,
                     cache_path,
                     tmp_dir,
-                    bgzip,
                     estimated_minimizers,
                     index_build_mode,
                     runtime_options,
@@ -80,7 +78,6 @@ impl ReferenceSketch {
             params,
             cache_path,
             tmp_dir,
-            bgzip,
             estimated_minimizers,
             index_build_mode,
             runtime_options,
@@ -93,7 +90,6 @@ impl ReferenceSketch {
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
-        bgzip: bool,
         estimated_minimizers: usize,
         index_build_mode: IndexBuildMode,
         runtime_options: RuntimeOptions,
@@ -106,7 +102,6 @@ impl ReferenceSketch {
                 params,
                 cache_path,
                 tmp_dir,
-                bgzip,
                 runtime_options,
             ),
             IndexBuildMode::Partitioned => Self::collect_and_save_streaming_partitioned(
@@ -114,7 +109,6 @@ impl ReferenceSketch {
                 params,
                 cache_path,
                 tmp_dir,
-                bgzip,
                 estimated_minimizers,
                 runtime_options,
             ),
@@ -128,7 +122,6 @@ impl ReferenceSketch {
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
-        bgzip: bool,
         runtime_options: RuntimeOptions,
     ) -> io::Result<SketchBuildStats> {
         let SketchParams { split_n_run, .. } = params;
@@ -312,8 +305,6 @@ impl ReferenceSketch {
             contig_names,
             reference_minimizer_count,
             &reference_minimizer_scratch,
-            tmp_dir,
-            bgzip,
             runtime_options,
         )?;
 
@@ -326,7 +317,6 @@ impl ReferenceSketch {
         params: SketchParams,
         cache_path: &Path,
         tmp_dir: Option<&Path>,
-        bgzip: bool,
         estimated_minimizers: usize,
         runtime_options: RuntimeOptions,
     ) -> io::Result<SketchBuildStats> {
@@ -525,7 +515,6 @@ impl ReferenceSketch {
             &partition_writers,
             partition_plan,
             tmp_dir,
-            bgzip,
             runtime_options,
         )?;
 
@@ -690,7 +679,6 @@ impl ReferenceSketch {
         partition_writers: &PartitionWriters,
         partition_plan: PartitionBuildPlan,
         tmp_dir: Option<&Path>,
-        bgzip: bool,
         runtime_options: RuntimeOptions,
     ) -> io::Result<usize> {
         let SketchParams {
@@ -953,12 +941,7 @@ impl ReferenceSketch {
             align_of::<ReferenceMinimizer>(),
         );
 
-        let mut sketch_output: SketchOutput = SketchOutput::create(
-            path,
-            tmp_dir,
-            bgzip,
-            runtime_options.effective_output_threads(),
-        )?;
+        let mut sketch_output: SketchOutput = SketchOutput::create(path)?;
         let mut writer: &mut BufWriter<fs::File> = sketch_output.writer_mut()?;
         writer.write_all(SKETCH_MAGIC)?;
         writer.write_all(&(metadata_bytes.len() as u64).to_le_bytes())?;
@@ -1078,7 +1061,6 @@ mod tests {
             },
             &hash_sketch_path,
             None,
-            false,
             1,
             IndexBuildMode::Hash,
             build_runtime,
@@ -1095,7 +1077,6 @@ mod tests {
             },
             &partitioned_sketch_path,
             None,
-            false,
             hash_stats.reference_minimizer_count,
             IndexBuildMode::Partitioned,
             build_runtime,
@@ -1116,7 +1097,6 @@ mod tests {
                 split_n_run: DEFAULT_SPLIT_N_RUN,
             },
             false,
-            None,
             RuntimeOptions::default(),
         )?;
         let partitioned_sketch: ReferenceSketch = ReferenceSketch::load(
@@ -1130,7 +1110,6 @@ mod tests {
                 split_n_run: DEFAULT_SPLIT_N_RUN,
             },
             false,
-            None,
             RuntimeOptions::default(),
         )?;
 

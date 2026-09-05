@@ -1073,7 +1073,6 @@ force = true
     assert_eq!(table["per_contig"].as_bool(), Some(false));
     assert_eq!(table["index_build_mode"].as_str(), Some("auto"));
     for required_key in [
-        "bgzip",
         "header",
         "verbose",
         "quiet",

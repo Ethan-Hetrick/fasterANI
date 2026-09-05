@@ -11,9 +11,7 @@ use std::{
 };
 
 use crate::ani::{
-    io_util::{
-        append_path_suffix, compress_file_to_bgzf, sketch_reference_name, FastaInput, ScratchFile,
-    },
+    io_util::{append_path_suffix, sketch_reference_name, FastaInput},
     mmap::MmapFile,
     model::reference::{ReferenceContigName, ReferenceFile, ShardManifestEntry},
 };
@@ -26,12 +24,8 @@ const NAME_SIDECAR_CONTIG_RECORD_BYTES: usize = 24;
 
 pub(crate) struct SketchOutput {
     pub(crate) final_path: PathBuf,
-    pub(crate) write_path: PathBuf,
     pub(crate) publish_path: PathBuf,
-    pub(crate) scratch: Option<ScratchFile>,
     pub(crate) writer: Option<BufWriter<fs::File>>,
-    pub(crate) bgzip: bool,
-    pub(crate) threads: usize,
     published: bool,
 }
 
@@ -95,12 +89,7 @@ pub(crate) fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()
 }
 
 impl SketchOutput {
-    pub(crate) fn create(
-        final_path: &Path,
-        tmp_dir: Option<&Path>,
-        bgzip: bool,
-        threads: usize,
-    ) -> io::Result<Self> {
+    pub(crate) fn create(final_path: &Path) -> io::Result<Self> {
         if let Some(parent) = final_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -110,33 +99,12 @@ impl SketchOutput {
 
         let (publish_path, publish_file): (PathBuf, fs::File) =
             create_sibling_temp_file(final_path)?;
-        if bgzip {
-            let (scratch, file): (ScratchFile, fs::File) =
-                ScratchFile::create(tmp_dir, "uncompressed-sketch")?;
-            let write_path: PathBuf = scratch.path.clone();
-            drop(publish_file);
-            Ok(Self {
-                final_path: final_path.to_path_buf(),
-                write_path,
-                publish_path,
-                scratch: Some(scratch),
-                writer: Some(BufWriter::new(file)),
-                bgzip,
-                threads,
-                published: false,
-            })
-        } else {
-            Ok(Self {
-                final_path: final_path.to_path_buf(),
-                write_path: publish_path.clone(),
-                publish_path,
-                scratch: None,
-                writer: Some(BufWriter::new(publish_file)),
-                bgzip,
-                threads,
-                published: false,
-            })
-        }
+        Ok(Self {
+            final_path: final_path.to_path_buf(),
+            publish_path,
+            writer: Some(BufWriter::new(publish_file)),
+            published: false,
+        })
     }
 
     pub(crate) fn writer_mut(&mut self) -> io::Result<&mut BufWriter<fs::File>> {
@@ -150,14 +118,9 @@ impl SketchOutput {
             writer.flush()?;
         }
 
-        if self.bgzip {
-            compress_file_to_bgzf(&self.write_path, &self.publish_path, self.threads)?;
-        }
-
         publish_temp_file(&self.publish_path, &self.final_path)?;
         self.published = true;
         let output_len: u64 = fs::metadata(&self.final_path)?.len();
-        drop(self.scratch.take());
         Ok(output_len)
     }
 }
@@ -684,33 +647,16 @@ pub(crate) fn global_frequency_entry_path(prefix: &Path, filename: &str) -> Path
         .unwrap_or(filename_path)
 }
 
-pub(crate) fn shard_path(
-    prefix: &Path,
-    generation_id: &str,
-    shard_index: usize,
-    bgzip: bool,
-) -> PathBuf {
-    if bgzip {
-        append_path_suffix(
-            prefix,
-            &format!(".{generation_id}.{shard_index}.fasketch.bgz"),
-        )
-    } else {
-        append_path_suffix(prefix, &format!(".{generation_id}.{shard_index}.fasketch"))
-    }
+pub(crate) fn shard_path(prefix: &Path, generation_id: &str, shard_index: usize) -> PathBuf {
+    append_path_suffix(prefix, &format!(".{generation_id}.{shard_index}.fasketch"))
 }
 
-pub(crate) fn shard_filename(
-    prefix: &Path,
-    generation_id: &str,
-    shard_index: usize,
-    bgzip: bool,
-) -> String {
-    shard_path(prefix, generation_id, shard_index, bgzip)
+pub(crate) fn shard_filename(prefix: &Path, generation_id: &str, shard_index: usize) -> String {
+    shard_path(prefix, generation_id, shard_index)
         .file_name()
         .map_or_else(
             || {
-                shard_path(prefix, generation_id, shard_index, bgzip)
+                shard_path(prefix, generation_id, shard_index)
                     .to_string_lossy()
                     .into_owned()
             },
@@ -737,7 +683,7 @@ pub(crate) fn legacy_sketch_path(prefix: &Path) -> Option<PathBuf> {
     }
 
     if prefix.extension().is_none() {
-        for extension in ["fasketch.bgz", "fasketch"] {
+        for extension in ["fasketch"] {
             let path: PathBuf = append_path_suffix(prefix, &format!(".{extension}"));
             if path.exists() {
                 return Some(path);
@@ -973,20 +919,12 @@ mod tests {
             PathBuf::from("/tmp/database.manifest.json")
         );
         assert_eq!(
-            shard_path(&prefix, "generation", 2, false),
+            shard_path(&prefix, "generation", 2),
             PathBuf::from("/tmp/database.generation.2.fasketch")
         );
         assert_eq!(
-            shard_filename(&prefix, "generation", 2, false),
+            shard_filename(&prefix, "generation", 2),
             "database.generation.2.fasketch"
-        );
-        assert_eq!(
-            shard_path(&prefix, "generation", 2, true),
-            PathBuf::from("/tmp/database.generation.2.fasketch.bgz")
-        );
-        assert_eq!(
-            shard_filename(&prefix, "generation", 2, true),
-            "database.generation.2.fasketch.bgz"
         );
     }
 
@@ -1007,7 +945,7 @@ mod tests {
         fs::write(&path, b"published-generation")?;
 
         {
-            let mut output = SketchOutput::create(&path, None, false, 1)?;
+            let mut output = SketchOutput::create(&path)?;
             output.writer_mut()?.write_all(b"incomplete-generation")?;
             // Dropping before finish models a failed build. The sibling temporary
             // file is removed and the previously published artifact is untouched.

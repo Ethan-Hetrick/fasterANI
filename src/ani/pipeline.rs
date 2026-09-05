@@ -133,7 +133,6 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
         args.sketch_path.as_deref(),
         ShardedBuildOptions {
             tmp_dir: args.tmp_dir.as_deref(),
-            bgzip: args.bgzip,
             max_shard_minimizers: args.max_shard_minimizers,
             index_build_mode: args.index_build_mode,
             threads: args.threads,

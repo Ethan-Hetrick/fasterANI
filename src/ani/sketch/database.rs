@@ -58,7 +58,6 @@ impl SketchDatabase {
         runtime_options: RuntimeOptions,
     ) -> io::Result<Self> {
         let ShardedBuildOptions {
-            tmp_dir,
             max_shard_minimizers,
             force_rebuild,
             ..
@@ -107,7 +106,6 @@ impl SketchDatabase {
                     &legacy_path,
                     params,
                     load_contig_names,
-                    tmp_dir,
                     runtime_options,
                 )?;
                 if !references.is_empty()
@@ -157,7 +155,6 @@ impl SketchDatabase {
         } = params;
         let ShardedBuildOptions {
             tmp_dir,
-            bgzip,
             max_shard_minimizers,
             index_build_mode,
             threads,
@@ -231,10 +228,9 @@ impl SketchDatabase {
                     io::Error::new(io::ErrorKind::InvalidData, "shard reference range overflow")
                 })?;
             let reference_chunk: &[FastaInput] = &references[first_reference..shard_end];
-            let shard_path: PathBuf = shard_path(prefix, &generation_id, shard_index, bgzip);
+            let shard_path: PathBuf = shard_path(prefix, &generation_id, shard_index);
             let shard_runtime_options: RuntimeOptions = runtime_options
                 .with_worker_threads(threads)
-                .with_output_threads(1)
                 .with_build_progress(&generation_id, shard_index)?;
 
             if runtime_options.progress_enabled {
@@ -243,7 +239,7 @@ impl SketchDatabase {
                 emit_progress(
                         "database_build",
                         &format!(
-                            "event=shard_start\tgeneration_id={generation_id}\tshard={shard_index}\tfirst_reference={first_reference}\treference_count={}\testimated_minimizers={}\testimated_memory_mib={:.3}\tindex_build_mode={}\trequested_index_build_mode={}\texecutor_threads={threads}\toutput_threads=1\tpath={}",
+                            "event=shard_start\tgeneration_id={generation_id}\tshard={shard_index}\tfirst_reference={first_reference}\treference_count={}\testimated_minimizers={}\testimated_memory_mib={:.3}\tindex_build_mode={}\trequested_index_build_mode={}\texecutor_threads={threads}\tpath={}",
                             reference_chunk.len(),
                             shard_plan.estimated_minimizers,
                             memory_mib(estimate_partitioned_shard_memory_bytes(
@@ -262,12 +258,8 @@ impl SketchDatabase {
                 params,
                 &shard_path,
                 tmp_dir,
-                bgzip,
                 shard_plan.estimated_minimizers,
                 index_build_mode,
-                // gzp selects its synchronous BGZF writer at one output thread,
-                // so concurrent shards do not add compression worker threads
-                // beyond the shared Rayon CPU-worker cap.
                 shard_runtime_options,
             )?;
             let file_bytes: u64 = fs::metadata(&shard_path)?.len();
@@ -292,7 +284,7 @@ impl SketchDatabase {
             Ok(ShardBuildResult {
                 entry: ShardManifestEntry {
                     shard_index,
-                    filename: shard_filename(prefix, &generation_id, shard_index, bgzip),
+                    filename: shard_filename(prefix, &generation_id, shard_index),
                     first_reference,
                     reference_count: stats.reference_count,
                     reference_contigs: stats.reference_contig_count,
@@ -653,7 +645,6 @@ mod tests {
             Some(&prefix),
             ShardedBuildOptions {
                 tmp_dir: None,
-                bgzip: false,
                 max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
                 index_build_mode: IndexBuildMode::Auto,
                 threads: 1,
@@ -703,7 +694,6 @@ mod tests {
         let params = default_params();
         let build_options = ShardedBuildOptions {
             tmp_dir: Some(&directory),
-            bgzip: false,
             max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
             index_build_mode: IndexBuildMode::Auto,
             threads: 1,
@@ -732,7 +722,7 @@ mod tests {
 
         let incomplete_generation = "unpublished-interrupted-generation";
         fs::write(
-            shard_path(&prefix, incomplete_generation, 1, false),
+            shard_path(&prefix, incomplete_generation, 1),
             b"incomplete shard",
         )?;
         fs::write(
@@ -764,13 +754,8 @@ mod tests {
         }
         assert_eq!(fs::read(manifest_path(&prefix))?, published_manifest_bytes);
 
-        let loaded_shard = ReferenceSketch::load(
-            &published_shard,
-            params,
-            false,
-            Some(&directory),
-            RuntimeOptions::default(),
-        )?;
+        let loaded_shard =
+            ReferenceSketch::load(&published_shard, params, false, RuntimeOptions::default())?;
         assert_eq!(loaded_shard.files.len(), references.len());
         assert_eq!(loaded_shard.files[0].path, "reference.fna");
         let name_sidecar_path = fs::read_dir(&directory)?

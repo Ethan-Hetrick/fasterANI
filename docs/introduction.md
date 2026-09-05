@@ -19,7 +19,6 @@
         - `--threads`: Standard multi-threading, applies to reference building and querying
         - `--max-shard-minimizers`: Controls reference lookup shard size for tunable memory scaling
         - `--index-build-mode <auto|partitioned>` controls reference lookup construction strategy
-        - `--bgzip`: Reads/writes bgzip-compressed saved reference minimizer lookup tables for low storage scenarios
         - `--tmp <path>`: Optionally redirect temporary files to user defined path
         - Multiple algorithmic parameters (e.g. `--kmer-size`, `--kmer-size`, etc.) can be tuned for sensitivity or speed
 - Improvements on user-friendliness:

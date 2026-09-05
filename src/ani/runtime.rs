@@ -16,7 +16,6 @@ use crate::ani::{
 pub(crate) struct RuntimeOptions {
     pub(crate) progress_enabled: bool,
     pub(crate) worker_threads: usize,
-    pub(crate) output_threads: usize,
     pub(crate) mphf_gamma: f64,
     build_progress: Option<BuildProgressContext>,
 }
@@ -33,7 +32,6 @@ impl Default for RuntimeOptions {
         Self {
             progress_enabled: false,
             worker_threads: 0,
-            output_threads: 0,
             mphf_gamma: DEFAULT_MPHF_GAMMA,
             build_progress: None,
         }
@@ -55,21 +53,6 @@ impl RuntimeOptions {
     pub(crate) fn with_worker_threads(self, worker_threads: usize) -> Self {
         Self {
             worker_threads: worker_threads.max(1),
-            ..self
-        }
-    }
-
-    pub(crate) fn effective_output_threads(self) -> usize {
-        if self.output_threads == 0 {
-            self.effective_worker_threads()
-        } else {
-            self.output_threads
-        }
-    }
-
-    pub(crate) fn with_output_threads(self, output_threads: usize) -> Self {
-        Self {
-            output_threads: output_threads.max(1),
             ..self
         }
     }

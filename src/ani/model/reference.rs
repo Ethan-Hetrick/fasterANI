@@ -31,7 +31,6 @@ pub(crate) struct SketchParams {
 #[derive(Clone, Copy)]
 pub(crate) struct ShardedBuildOptions<'a> {
     pub(crate) tmp_dir: Option<&'a Path>,
-    pub(crate) bgzip: bool,
     pub(crate) max_shard_minimizers: usize,
     pub(crate) index_build_mode: IndexBuildMode,
     pub(crate) threads: usize,

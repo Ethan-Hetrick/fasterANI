@@ -1,14 +1,13 @@
-//! Filesystem, gzip/bgzf, byte-slice, and scratch-file helpers.
+//! Filesystem, gzip, byte-slice, and scratch-file helpers.
 
 use std::{
     env, fs, io,
-    io::{BufReader, BufWriter, Cursor, Read, Write},
+    io::{BufReader, Cursor, Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use flate2::read::MultiGzDecoder;
-use gzp::{deflate::Bgzf, ZBuilder};
 use noodles::fasta;
 
 pub(crate) fn align_up(value: usize, alignment: usize) -> usize {
@@ -96,10 +95,6 @@ fn buf_reader_maybe_gzip(mut reader: impl Read + 'static) -> io::Result<Box<dyn 
     }
 }
 
-pub(crate) fn gzp_error_to_io(error: gzp::GzpError) -> io::Error {
-    io::Error::other(format!("failed to finish BGZF compression: {error}"))
-}
-
 pub(crate) fn open_fasta_reader(path: &str) -> io::Result<fasta::io::Reader<Box<dyn io::BufRead>>> {
     let reader: Box<dyn io::BufRead> = if is_stdin_path(path) {
         buf_reader_maybe_gzip(io::stdin().lock())?
@@ -114,47 +109,6 @@ pub(crate) fn open_fasta_reader(path: &str) -> io::Result<fasta::io::Reader<Box<
     };
 
     fasta::io::reader::Builder.build_from_reader(reader)
-}
-
-pub(crate) fn compress_file_to_bgzf(
-    source: &Path,
-    destination: &Path,
-    threads: usize,
-) -> io::Result<()> {
-    if let Some(parent) = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-
-    let input: fs::File = fs::File::open(source)?;
-    let output: fs::File = fs::File::create(destination)?;
-    let mut reader: BufReader<fs::File> = BufReader::new(input);
-    let mut writer = ZBuilder::<Bgzf, fs::File>::new()
-        .num_threads(threads.max(1))
-        .from_writer(output);
-    io::copy(&mut reader, &mut writer)?;
-    writer.finish().map_err(gzp_error_to_io)?;
-
-    Ok(())
-}
-
-pub(crate) fn decompress_to_scratch(
-    source: &Path,
-    tmp_dir: Option<&Path>,
-    purpose: &str,
-) -> io::Result<ScratchFile> {
-    let (scratch, scratch_file): (ScratchFile, fs::File) = ScratchFile::create(tmp_dir, purpose)?;
-    let input: fs::File = fs::File::open(source)?;
-    let mut reader: BufReader<MultiGzDecoder<fs::File>> =
-        BufReader::new(MultiGzDecoder::new(input));
-    let mut writer: BufWriter<fs::File> = BufWriter::new(scratch_file);
-    io::copy(&mut reader, &mut writer)?;
-    writer.flush()?;
-    drop(writer);
-
-    Ok(scratch)
 }
 
 pub(crate) fn slice_as_bytes<T>(slice: &[T]) -> &[u8] {
