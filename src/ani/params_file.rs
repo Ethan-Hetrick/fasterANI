@@ -22,7 +22,6 @@ pub(crate) struct ParamsFileConfig {
     pub(crate) split_n_run: Option<usize>,
     pub(crate) max_shard_minimizers: Option<usize>,
     pub(crate) shards: Option<String>,
-    pub(crate) index_build_mode: Option<String>,
     pub(crate) header: Option<bool>,
     pub(crate) per_contig: Option<bool>,
     pub(crate) verbose: Option<bool>,

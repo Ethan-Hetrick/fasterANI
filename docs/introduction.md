@@ -18,7 +18,7 @@
         - `--sketch`: Create reference database once on a high-performance machine (or download one), queries then use minimal resources
         - `--threads`: Standard multi-threading, applies to reference building and querying
         - `--max-shard-minimizers`: Controls reference lookup shard size for tunable memory scaling
-        - `--index-build-mode <auto|partitioned>` controls reference lookup construction strategy
+        - Persistent sketches use bounded temporary partitions during construction
         - `--tmp <path>`: Optionally redirect temporary files to user defined path
         - Multiple algorithmic parameters (e.g. `--kmer-size`, `--kmer-size`, etc.) can be tuned for sensitivity or speed
 - Improvements on user-friendliness:

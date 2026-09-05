@@ -483,33 +483,6 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
         fs::read(&mapping_stats_two).expect("read parallel mapping stats")
     );
 
-    let hash_prefix_one = temp_dir.join("hash-threads-1/database");
-    let hash_output_one = run(&[
-        "--threads",
-        "1",
-        "--reference-sketch",
-        hash_prefix_one.to_str().expect("utf-8 hash prefix"),
-        "--index-build-mode",
-        "hash",
-    ]);
-    assert_eq!(direct_threads_one, hash_output_one);
-
-    let hash_prefix = temp_dir.join("hash-threads-2/database");
-    let hash_output = run(&[
-        "--threads",
-        "2",
-        "--reference-sketch",
-        hash_prefix.to_str().expect("utf-8 hash prefix"),
-        "--index-build-mode",
-        "hash",
-    ]);
-    assert_eq!(direct_threads_one, hash_output);
-    assert_eq!(
-        read_persisted_artifacts(&hash_prefix_one),
-        read_persisted_artifacts(&hash_prefix),
-        "serial and parallel hash builds produced different persisted artifacts"
-    );
-
     let partitioned_prefix_one = temp_dir.join("partitioned-threads-1/database");
     let partitioned_output_one = run(&[
         "--threads",
@@ -518,8 +491,6 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
         partitioned_prefix_one
             .to_str()
             .expect("utf-8 partitioned prefix"),
-        "--index-build-mode",
-        "partitioned",
     ]);
     assert_eq!(direct_threads_one, partitioned_output_one);
 
@@ -531,8 +502,6 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
         partitioned_prefix
             .to_str()
             .expect("utf-8 partitioned prefix"),
-        "--index-build-mode",
-        "partitioned",
     ]);
     assert_eq!(direct_threads_one, partitioned_output);
     assert_eq!(
@@ -547,8 +516,6 @@ fn direct_saved_and_sharded_workflows_are_exactly_reproducible() {
         "2",
         "--reference-sketch",
         sharded_prefix.to_str().expect("utf-8 sharded prefix"),
-        "--index-build-mode",
-        "hash",
         "--max-shard-minimizers",
         "1",
     ]);
@@ -1084,7 +1051,6 @@ force = true
     assert_eq!(table["force"].as_bool(), Some(true));
     assert_eq!(table["threads"].as_integer(), Some(1));
     assert_eq!(table["per_contig"].as_bool(), Some(false));
-    assert_eq!(table["index_build_mode"].as_str(), Some("auto"));
     for required_key in [
         "header",
         "verbose",

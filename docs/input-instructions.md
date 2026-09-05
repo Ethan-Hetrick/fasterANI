@@ -113,6 +113,8 @@ mash_confidence = 0.9
 
 
 # Sketch database / sharding
+# Persistent sketch builds use bounded temporary partitions. Omit
+# reference_sketch for a one-time, in-memory reference/query run.
 # MPHF size/build-time tradeoff for saved sketches. Must be finite and > 1.01.
 mphf_gamma = 10.0
 
@@ -122,9 +124,6 @@ max_shard_minimizers = 500_000_000
 # Query only selected shard indices. Requires reference_sketch.
 # Format matches --shards: comma-separated indices and ranges.
 shards = "1,3,5-8"
-
-# Reference index build strategy: "auto", "hash", or "partitioned".
-index_build_mode = "auto"
 
 
 # Resources

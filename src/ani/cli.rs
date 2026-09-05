@@ -20,10 +20,7 @@ use crate::ani::{
     },
     io_util::{is_stdin_path, FastaInput},
     params_file::{load_params_file, ParamsFileConfig},
-    sketch::{
-        partition::IndexBuildMode,
-        serialize::{legacy_sketch_path, manifest_path},
-    },
+    sketch::serialize::{legacy_sketch_path, manifest_path},
     validation::{
         validate_fragment_length, validate_kmer_size, validate_mash_confidence,
         validate_mash_threshold, validate_max_shard_minimizers, validate_mphf_gamma,
@@ -65,7 +62,6 @@ pub(crate) struct CliArgs {
     pub(crate) split_n_run: usize,
     pub(crate) max_shard_minimizers: usize,
     pub(crate) shard_filter: Option<HashSet<usize>>,
-    pub(crate) index_build_mode: IndexBuildMode,
     pub(crate) force: bool,
 }
 
@@ -203,7 +199,6 @@ where
     let mut split_n_run: usize = DEFAULT_SPLIT_N_RUN;
     let mut max_shard_minimizers: Option<usize> = None;
     let mut shard_filter: Option<HashSet<usize>> = None;
-    let mut index_build_mode: IndexBuildMode = IndexBuildMode::Auto;
 
     if let Some(path) = params_file_path.as_deref() {
         let absolute_path = path::absolute(path)?;
@@ -367,10 +362,6 @@ where
     if let Some(value) = params_file_config.shards.as_ref() {
         shard_filter = Some(parse_shard_filter(value)?);
         sources.shards = Some(ParameterSource::ParamsFile);
-    }
-    if let Some(value) = params_file_config.index_build_mode.as_ref() {
-        index_build_mode = value.parse::<IndexBuildMode>()?;
-        sources.index_build_mode = Some(ParameterSource::ParamsFile);
     }
 
     let mut args = raw_args.into_iter();
@@ -606,16 +597,6 @@ where
                 })?;
                 tmp_dir = Some(PathBuf::from(value));
                 sources.tmp = Some(ParameterSource::Cli);
-            }
-            "--index-build-mode" => {
-                let value = args.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--index-build-mode requires a value",
-                    )
-                })?;
-                index_build_mode = value.parse::<IndexBuildMode>()?;
-                sources.index_build_mode = Some(ParameterSource::Cli);
             }
             "--out" => {
                 let value = args.next().ok_or_else(|| {
@@ -945,7 +926,6 @@ where
         split_n_run,
         max_shard_minimizers,
         shard_filter,
-        index_build_mode,
         force,
     };
     if !cli_args.quiet {
@@ -1006,6 +986,18 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("unknown argument \"--bgzip\""));
+    }
+
+    #[test]
+    fn removed_index_build_mode_flag_is_rejected() {
+        let error = parse_cli_args_from(["--index-build-mode", "hash"])
+            .err()
+            .expect("removed --index-build-mode flag should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error
+            .to_string()
+            .contains("unknown argument \"--index-build-mode\""));
     }
 
     #[test]

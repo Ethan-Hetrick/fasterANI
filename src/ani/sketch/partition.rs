@@ -1,11 +1,10 @@
-//! Index build modes and shard/partition planning.
+//! Reference shard and temporary-partition planning.
 
 use std::{
     fs, io,
     io::{BufWriter, Write},
     mem::{offset_of, size_of},
     path::Path,
-    str::FromStr,
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
     time::Instant,
 };
@@ -17,8 +16,7 @@ use crate::ani::{
     constants::{
         MinimizerKey, DEFAULT_PARTITION_TARGET_BYTES,
         ESTIMATED_PARTITIONED_SHARD_BYTES_PER_MINIMIZER, MAX_PARTITION_COUNT, MIN_PARTITION_COUNT,
-        PARTITIONED_INDEX_MINIMIZER_THRESHOLD, REFERENCE_PROGRESS_INTERVAL,
-        SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
+        REFERENCE_PROGRESS_INTERVAL, SKETCH_DATABASE_SCHEMA_VERSION, SKETCH_VERSION,
     },
     io_util::{open_fasta_reader, slice_as_bytes, FastaInput, ScratchFile},
     minimizer::{expected_minimizer_window_count, split_sequence_ranges},
@@ -26,40 +24,6 @@ use crate::ani::{
     runtime::{emit_progress, RuntimeOptions},
     validation::validate_max_shard_minimizers,
 };
-
-/// User-selectable strategy for building the reference sketch index.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IndexBuildMode {
-    Auto,
-    Hash,
-    Partitioned,
-}
-
-impl IndexBuildMode {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Hash => "hash",
-            Self::Partitioned => "partitioned",
-        }
-    }
-}
-
-impl FromStr for IndexBuildMode {
-    type Err = io::Error;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "hash" => Ok(Self::Hash),
-            "partitioned" => Ok(Self::Partitioned),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("--index-build-mode must be one of auto, hash, partitioned; got {value:?}"),
-            )),
-        }
-    }
-}
 
 /// One ungrouped minimizer-index hit written to a temporary partition.
 #[repr(C)]
@@ -168,19 +132,6 @@ pub(crate) fn partition_build_plan(estimated_minimizers: usize) -> PartitionBuil
         partition_count,
         target_partition_bytes,
         estimated_record_bytes,
-    }
-}
-
-pub(crate) fn effective_index_build_mode(
-    requested_mode: IndexBuildMode,
-    estimated_minimizers: usize,
-) -> IndexBuildMode {
-    match requested_mode {
-        IndexBuildMode::Auto if estimated_minimizers >= PARTITIONED_INDEX_MINIMIZER_THRESHOLD => {
-            IndexBuildMode::Partitioned
-        }
-        IndexBuildMode::Auto => IndexBuildMode::Hash,
-        mode => mode,
     }
 }
 

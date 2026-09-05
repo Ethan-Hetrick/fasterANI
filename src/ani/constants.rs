@@ -22,7 +22,6 @@ pub(crate) const DEFAULT_MPHF_GAMMA: f64 = 10.0;
 /// 500M targets roughly 10 GiB `.fasketch` shards for GTDB-like bacterial genomes
 /// using the observed storage model of about 21 bytes per reference minimizer.
 pub(crate) const DEFAULT_MAX_SHARD_MINIMIZERS: usize = 500_000_000;
-pub(crate) const PARTITIONED_INDEX_MINIMIZER_THRESHOLD: usize = 100_000_000;
 pub(crate) const DEFAULT_PARTITION_TARGET_BYTES: usize = 512 * 1024 * 1024;
 pub(crate) const MIN_PARTITION_COUNT: usize = 16;
 pub(crate) const MAX_PARTITION_COUNT: usize = 4096;

@@ -13,7 +13,6 @@ do
     RAYON_NUM_THREADS=4 /usr/bin/time -v -- \
         ./target/performance/fasterANI \
         --reference-list ./benchmarks/ref-1000.txt \
-        --index-build-mode partitioned \
         --reference-sketch "$run_dir/sketch" \
         --mphf-gamma "$gamma" \
         --force \

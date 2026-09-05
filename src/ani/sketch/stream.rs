@@ -14,7 +14,7 @@ use rayon::prelude::*;
 
 use crate::ani::{
     constants::{
-        MinimizerKey, ReferenceHitMap, PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL,
+        MinimizerKey, PARTITION_BUFFER_RECORDS, REFERENCE_PROGRESS_INTERVAL,
         SKETCH_KEY_PACK_PROGRESS_INTERVAL, SKETCH_MAGIC, SKETCH_VERSION,
     },
     io_util::{
@@ -29,8 +29,8 @@ use crate::ani::{
     sketch::{
         extract::{for_each_extracted_reference_segment, ReferenceExtractionStats},
         partition::{
-            effective_index_build_mode, partition_build_plan, GroupedKeyRecord, IndexBuildMode,
-            PartitionBuildPlan, PartitionGroupResult, PartitionHitRecord, PartitionWriters,
+            partition_build_plan, GroupedKeyRecord, PartitionBuildPlan, PartitionGroupResult,
+            PartitionHitRecord, PartitionWriters,
         },
         serialize::{write_name_sidecar, SketchOutput},
     },
@@ -47,7 +47,6 @@ impl ReferenceSketch {
         cache_path: &Path,
         tmp_dir: Option<&Path>,
         estimated_minimizers: usize,
-        index_build_mode: IndexBuildMode,
         runtime_options: RuntimeOptions,
     ) -> io::Result<SketchBuildStats> {
         if rayon::current_thread_index().is_none() {
@@ -67,7 +66,6 @@ impl ReferenceSketch {
                     cache_path,
                     tmp_dir,
                     estimated_minimizers,
-                    index_build_mode,
                     runtime_options,
                 )
             });
@@ -79,240 +77,12 @@ impl ReferenceSketch {
             cache_path,
             tmp_dir,
             estimated_minimizers,
-            index_build_mode,
             runtime_options,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn collect_and_save_streaming_in_current_pool(
-        references: &[FastaInput],
-        params: SketchParams,
-        cache_path: &Path,
-        tmp_dir: Option<&Path>,
-        estimated_minimizers: usize,
-        index_build_mode: IndexBuildMode,
-        runtime_options: RuntimeOptions,
-    ) -> io::Result<SketchBuildStats> {
-        let effective_mode: IndexBuildMode =
-            effective_index_build_mode(index_build_mode, estimated_minimizers);
-        match effective_mode {
-            IndexBuildMode::Hash => Self::collect_and_save_streaming_hash(
-                references,
-                params,
-                cache_path,
-                tmp_dir,
-                runtime_options,
-            ),
-            IndexBuildMode::Partitioned => Self::collect_and_save_streaming_partitioned(
-                references,
-                params,
-                cache_path,
-                tmp_dir,
-                estimated_minimizers,
-                runtime_options,
-            ),
-            IndexBuildMode::Auto => unreachable!("auto mode is resolved before sketch build"),
-        }
-    }
-
-    /// Build a reference sketch cache using the in-memory minimizer hit map.
-    pub(crate) fn collect_and_save_streaming_hash(
-        references: &[FastaInput],
-        params: SketchParams,
-        cache_path: &Path,
-        tmp_dir: Option<&Path>,
-        runtime_options: RuntimeOptions,
-    ) -> io::Result<SketchBuildStats> {
-        let SketchParams { split_n_run, .. } = params;
-        let build_start: Instant = Instant::now();
-        let mut files: Vec<ReferenceFile> = Vec::new();
-        let mut contig_records: Vec<ContigRecord> = Vec::new();
-        let mut contig_names: Vec<ReferenceContigName> = Vec::new();
-        let mut index: ReferenceHitMap = ReferenceHitMap::default();
-        let (reference_minimizer_scratch, reference_minimizer_file): (ScratchFile, fs::File) =
-            ScratchFile::create(tmp_dir, "reference-build-minimizers")?;
-        let mut reference_minimizer_writer: BufWriter<fs::File> =
-            BufWriter::new(reference_minimizer_file);
-        let mut reference_minimizer_count: usize = 0usize;
-        let mut total_seed_hits: usize = 0usize;
-        files.reserve(references.len());
-        contig_records.reserve(references.len());
-
-        if runtime_options.progress_enabled {
-            emit_runtime_progress(
-                runtime_options,
-                "reference_build",
-                &format!(
-                    "event=start\tmode=streaming\tfiles_total={}\tsplit_n_run={split_n_run}\tartifact={}\ttmp={}",
-                    references.len(),
-                    cache_path.display(),
-                    reference_minimizer_scratch.path.display()
-                ),
-                build_start,
-            );
-        }
-        for (file_id, reference) in references.iter().enumerate() {
-            let file_id_u32: u32 = u32::try_from(file_id).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "reference {} file id exceeds sketch cache limit: {err}",
-                        reference.output_label
-                    ),
-                )
-            })?;
-            let extraction: ReferenceExtractionStats = for_each_extracted_reference_segment(
-                reference,
-                params,
-                |segment| {
-                    let reference_contig_id_u32: u32 =
-                        u32::try_from(contig_records.len()).map_err(|err| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "reference {} record {:?}: contig id exceeds sketch cache limit: {err}",
-                                    reference.output_label, segment.record_name
-                                ),
-                            )
-                        })?;
-                    index.reserve(segment.minimizers.len());
-
-                    for minimizer in &segment.minimizers {
-                        index.entry(minimizer.hash).or_default().push(SeedHit {
-                            reference_contig_id: reference_contig_id_u32,
-                            position: minimizer.position,
-                        });
-                    }
-
-                    let minimizer_offset: u64 =
-                        u64::try_from(reference_minimizer_count).map_err(|err| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "reference {} minimizer offset exceeds u64: {err}",
-                                    reference.output_label
-                                ),
-                            )
-                        })?;
-                    let minimizer_count: u32 =
-                        u32::try_from(segment.minimizers.len()).map_err(|err| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "reference {} record {:?}: contig has too many minimizers for sketch cache: {err}",
-                                    reference.output_label, segment.record_name
-                                ),
-                            )
-                        })?;
-
-                    reference_minimizer_writer.write_all(slice_as_bytes(&segment.minimizers))?;
-                    reference_minimizer_count = reference_minimizer_count
-                        .checked_add(segment.minimizers.len())
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "reference {} minimizer count exceeds usize",
-                                    reference.output_label
-                                ),
-                            )
-                        })?;
-                    total_seed_hits = total_seed_hits
-                        .checked_add(segment.minimizers.len())
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "reference {} hit count exceeds usize",
-                                    reference.output_label
-                                ),
-                            )
-                        })?;
-                    contig_records.push(ContigRecord {
-                        minimizer_offset,
-                        file_id: file_id_u32,
-                        minimizer_count,
-                    });
-                    contig_names.push(ReferenceContigName {
-                        file_id,
-                        name: segment.record_name,
-                        segment_start: segment.segment_start,
-                        segment_end: segment.segment_end,
-                    });
-                    Ok(())
-                },
-            )?;
-
-            files.push(ReferenceFile {
-                path: reference.output_label.clone(),
-                mapped_length: extraction.mapped_length,
-                original_length: extraction.original_length,
-            });
-
-            let files_done: usize = file_id + 1;
-            if runtime_options.progress_enabled
-                && (files_done.is_multiple_of(REFERENCE_PROGRESS_INTERVAL)
-                    || files_done == references.len())
-            {
-                emit_runtime_progress(
-                    runtime_options,
-                    "reference_build",
-                    &format!(
-                        "event=files\tmode=streaming\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tunique_minimizers={}\tseed_hits={total_seed_hits}\tartifact={}",
-                        references.len(),
-                        contig_records.len(),
-                        index.len(),
-                        cache_path.display()
-                    ),
-                    build_start,
-                );
-            }
-        }
-
-        reference_minimizer_writer.flush()?;
-        drop(reference_minimizer_writer);
-
-        if runtime_options.progress_enabled {
-            emit_runtime_progress(
-                runtime_options,
-                "reference_build",
-                &format!(
-                    "event=complete\tmode=streaming\tfiles_done={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tunique_minimizers={}\tseed_hits={total_seed_hits}\tartifact={}",
-                    references.len(),
-                    contig_records.len(),
-                    index.len(),
-                    cache_path.display()
-                ),
-                build_start,
-            );
-        }
-
-        let stats: SketchBuildStats = SketchBuildStats {
-            reference_count: files.len(),
-            reference_contig_count: contig_records.len(),
-            mapped_reference_length: files.iter().map(|file| file.mapped_length).sum(),
-            reference_minimizer_count,
-            unique_minimizer_count: index.len(),
-        };
-
-        Self::save_streamed_cache(
-            cache_path,
-            params,
-            files,
-            &index,
-            contig_records,
-            contig_names,
-            reference_minimizer_count,
-            &reference_minimizer_scratch,
-            runtime_options,
-        )?;
-
-        Ok(stats)
-    }
-
     /// Build a reference sketch cache using disk-partitioned minimizer hit records.
-    pub(crate) fn collect_and_save_streaming_partitioned(
+    fn collect_and_save_streaming_in_current_pool(
         references: &[FastaInput],
         params: SketchParams,
         cache_path: &Path,
@@ -345,7 +115,7 @@ impl ReferenceSketch {
                 runtime_options,
                 "reference_build",
                 &format!(
-                    "event=start\tmode=streaming\tindex_build_mode=partitioned\tfiles_total={}\tsplit_n_run={split_n_run}\tpartitions={}\testimated_minimizers={estimated_minimizers}\testimated_record_mib={:.3}\ttarget_partition_mib={:.3}\tartifact={}\ttmp={}",
+"event=start\tmode=streaming\tbuild_strategy=external_memory\tfiles_total={}\tsplit_n_run={split_n_run}\tpartitions={}\testimated_minimizers={estimated_minimizers}\testimated_record_mib={:.3}\ttarget_partition_mib={:.3}\tartifact={}\ttmp={}",
                     references.len(),
                     partition_plan.partition_count,
                     memory_mib(partition_plan.estimated_record_bytes),
@@ -471,7 +241,7 @@ impl ReferenceSketch {
                     runtime_options,
                     "reference_build",
                     &format!(
-                        "event=files\tmode=streaming\tindex_build_mode=partitioned\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tseed_hits={total_seed_hits}\tpartitions={}\tartifact={}",
+                        "event=files\tmode=streaming\tbuild_strategy=external_memory\tfiles_done={files_done}\tfiles_total={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tseed_hits={total_seed_hits}\tpartitions={}\tartifact={}",
                         references.len(),
                         contig_records.len(),
                         partition_plan.partition_count,
@@ -491,7 +261,7 @@ impl ReferenceSketch {
                 runtime_options,
                 "reference_build",
                 &format!(
-                    "event=complete\tmode=streaming\tindex_build_mode=partitioned\tfiles_done={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tseed_hits={total_seed_hits}\tpartitions={}\tartifact={}",
+                    "event=complete\tmode=streaming\tbuild_strategy=external_memory\tfiles_done={}\tcontigs={}\treference_minimizers={reference_minimizer_count}\tseed_hits={total_seed_hits}\tpartitions={}\tartifact={}",
                     references.len(),
                     contig_records.len(),
                     partition_plan.partition_count,
@@ -702,7 +472,7 @@ impl ReferenceSketch {
                 runtime_options,
                 "sketch_save",
                 &format!(
-                    "event=start\tmode=streaming\tindex_build_mode=partitioned\tpartitions={}\testimated_minimizers={}\ttarget_partition_mib={:.3}\tcontigs={}\tfiles={}\tartifact={}\ttmp={}",
+                    "event=start\tmode=streaming\tbuild_strategy=external_memory\tpartitions={}\testimated_minimizers={}\ttarget_partition_mib={:.3}\tcontigs={}\tfiles={}\tartifact={}\ttmp={}",
                     partition_plan.partition_count,
                     partition_plan.estimated_record_bytes / size_of::<PartitionHitRecord>(),
                     memory_mib(partition_plan.target_partition_bytes),
@@ -737,7 +507,7 @@ impl ReferenceSketch {
                         runtime_options,
                         "sketch_save",
                         &format!(
-                            "event=sort_group_partitions\tmode=streaming\tindex_build_mode=partitioned\tpartitions_done={partitions_done}\tpartitions={}\tpartition_parallelism={partition_parallelism}\tartifact={}",
+                            "event=sort_group_partitions\tmode=streaming\tbuild_strategy=external_memory\tpartitions_done={partitions_done}\tpartitions={}\tpartition_parallelism={partition_parallelism}\tartifact={}",
                             partition_paths.len(),
                             path.display()
                         ),
@@ -767,7 +537,7 @@ impl ReferenceSketch {
                 runtime_options,
                 "sketch_save",
                 &format!(
-                    "event=keys_collected\tmode=streaming\tindex_build_mode=partitioned\tkey_count={}\thit_count={total_hits}\tpartition_parallelism={partition_parallelism}\tartifact={}",
+                    "event=keys_collected\tmode=streaming\tbuild_strategy=external_memory\tkey_count={}\thit_count={total_hits}\tpartition_parallelism={partition_parallelism}\tartifact={}",
                     keys.len(),
                     path.display(),
                 ),
@@ -782,7 +552,7 @@ impl ReferenceSketch {
                 runtime_options,
                 "sketch_save",
                 &format!(
-                    "event=mphf_built\tmode=streaming\tindex_build_mode=partitioned\tkey_count={key_count}\tartifact={}",
+                    "event=mphf_built\tmode=streaming\tbuild_strategy=external_memory\tkey_count={key_count}\tartifact={}",
                     path.display(),
                 ),
                 save_start,
@@ -839,7 +609,7 @@ impl ReferenceSketch {
                         runtime_options,
                         "sketch_save",
                         &format!(
-                            "event=pack_index\tmode=streaming\tindex_build_mode=partitioned\tkeys_done={grouped_records_done}\tkey_count={key_count}\tartifact={}",
+                            "event=pack_index\tmode=streaming\tbuild_strategy=external_memory\tkeys_done={grouped_records_done}\tkey_count={key_count}\tartifact={}",
                             path.display(),
                         ),
                         save_start,
@@ -994,7 +764,7 @@ impl ReferenceSketch {
                 runtime_options,
                 "sketch_save",
                 &format!(
-                    "event=complete\tmode=streaming\tindex_build_mode=partitioned\tpath={}\tfile_bytes={}",
+                    "event=complete\tmode=streaming\tbuild_strategy=external_memory\tpath={}\tfile_bytes={}",
                     path.display(),
                     output_file_bytes
                 ),
@@ -1013,9 +783,9 @@ mod tests {
             DEFAULT_MIN_FRAGMENT_LENGTH, DEFAULT_SPLIT_N_RUN, DEFAULT_WINDOW_SIZE,
         },
         io_util::FastaInput,
-        model::reference::{ReferenceMinimizer, ReferenceSketch, SketchBuildStats, SketchParams},
+        model::reference::{ReferenceSketch, SketchBuildStats, SketchParams},
         runtime::RuntimeOptions,
-        sketch::{partition::IndexBuildMode, serialize::NameSidecar},
+        sketch::serialize::NameSidecar,
     };
     use std::{
         env, fs, io,
@@ -1023,7 +793,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    fn assert_partitioned_matches_hash(
+    fn assert_persisted_sketch_round_trips(
         sequence: &[u8],
         expected_key_parity: usize,
         label: &str,
@@ -1033,101 +803,46 @@ mod tests {
             .expect("clock after epoch")
             .as_nanos();
         let directory: PathBuf = env::temp_dir().join(format!(
-            "fasterani-partitioned-{label}-{}-{nanos}",
+            "fasterani-persisted-{label}-{}-{nanos}",
             std::process::id()
         ));
         fs::create_dir_all(&directory)?;
         let reference_path: PathBuf = directory.join("reference.fa");
-        let hash_sketch_path: PathBuf = directory.join("hash.fasketch");
-        let partitioned_sketch_path: PathBuf = directory.join("partitioned.fasketch");
+        let sketch_path: PathBuf = directory.join("reference.fasketch");
         fs::write(
             &reference_path,
             format!(">ref\n{}\n", String::from_utf8_lossy(sequence)),
         )?;
-        let references: Vec<FastaInput> = vec![FastaInput::from_path(
+        let references = vec![FastaInput::from_path(
             reference_path.to_string_lossy().into_owned(),
         )];
-        let build_runtime: RuntimeOptions = RuntimeOptions::default().with_worker_threads(4);
+        let params = SketchParams {
+            kmer_size: DEFAULT_KMER_SIZE,
+            window_size: DEFAULT_WINDOW_SIZE,
+            minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
+            fragment_length: DEFAULT_FRAGMENT_LENGTH,
+            min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
+            split_n_run: DEFAULT_SPLIT_N_RUN,
+        };
 
-        let hash_stats: SketchBuildStats = ReferenceSketch::collect_and_save_streaming(
+        let stats: SketchBuildStats = ReferenceSketch::collect_and_save_streaming(
             &references,
-            SketchParams {
-                kmer_size: DEFAULT_KMER_SIZE,
-                window_size: DEFAULT_WINDOW_SIZE,
-                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-                fragment_length: DEFAULT_FRAGMENT_LENGTH,
-                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
-                split_n_run: DEFAULT_SPLIT_N_RUN,
-            },
-            &hash_sketch_path,
+            params,
+            &sketch_path,
             None,
-            1,
-            IndexBuildMode::Hash,
-            build_runtime,
-        )?;
-        let partitioned_stats: SketchBuildStats = ReferenceSketch::collect_and_save_streaming(
-            &references,
-            SketchParams {
-                kmer_size: DEFAULT_KMER_SIZE,
-                window_size: DEFAULT_WINDOW_SIZE,
-                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-                fragment_length: DEFAULT_FRAGMENT_LENGTH,
-                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
-                split_n_run: DEFAULT_SPLIT_N_RUN,
-            },
-            &partitioned_sketch_path,
-            None,
-            hash_stats.reference_minimizer_count,
-            IndexBuildMode::Partitioned,
-            build_runtime,
+            sequence.len(),
+            RuntimeOptions::default().with_worker_threads(4),
         )?;
         assert_eq!(
-            hash_stats.unique_minimizer_count % 2,
+            stats.unique_minimizer_count % 2,
             expected_key_parity,
             "{label} fixture did not exercise the intended key-count parity"
         );
-        let hash_sketch: ReferenceSketch = ReferenceSketch::load(
-            &hash_sketch_path,
-            SketchParams {
-                kmer_size: DEFAULT_KMER_SIZE,
-                window_size: DEFAULT_WINDOW_SIZE,
-                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-                fragment_length: DEFAULT_FRAGMENT_LENGTH,
-                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
-                split_n_run: DEFAULT_SPLIT_N_RUN,
-            },
-            false,
-            RuntimeOptions::default(),
-        )?;
-        let partitioned_sketch: ReferenceSketch = ReferenceSketch::load(
-            &partitioned_sketch_path,
-            SketchParams {
-                kmer_size: DEFAULT_KMER_SIZE,
-                window_size: DEFAULT_WINDOW_SIZE,
-                minimizer_hash_seed: DEFAULT_MINIMIZER_HASH_SEED,
-                fragment_length: DEFAULT_FRAGMENT_LENGTH,
-                min_fragment_length: DEFAULT_MIN_FRAGMENT_LENGTH,
-                split_n_run: DEFAULT_SPLIT_N_RUN,
-            },
-            false,
-            RuntimeOptions::default(),
-        )?;
 
-        assert_eq!(
-            hash_stats.reference_minimizer_count,
-            partitioned_stats.reference_minimizer_count
-        );
-        assert_eq!(
-            hash_stats.unique_minimizer_count,
-            partitioned_stats.unique_minimizer_count
-        );
-        assert_eq!(hash_sketch.files.len(), partitioned_sketch.files.len());
-        assert_eq!(hash_sketch.contigs.len(), partitioned_sketch.contigs.len());
-        assert_eq!(hash_sketch.files[0].original_length, sequence.len() as u64);
-        assert_eq!(
-            partitioned_sketch.files[0].original_length,
-            sequence.len() as u64
-        );
+        let sketch = ReferenceSketch::load(&sketch_path, params, false, RuntimeOptions::default())?;
+        assert_eq!(sketch.files.len(), 1);
+        assert_eq!(sketch.files[0].original_length, sequence.len() as u64);
+        assert_eq!(sketch.contigs.len(), stats.reference_contig_count);
 
         let name_sidecars: Vec<PathBuf> = fs::read_dir(&directory)?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -1143,42 +858,38 @@ mod tests {
         assert_eq!(name_sidecar.genome_count(), 1);
         assert_eq!(name_sidecar.genome_name(0)?, "reference.fa");
         assert_eq!(name_sidecar.genome_length(0)?, sequence.len() as u64);
-        assert_eq!(name_sidecar.contig_count(), hash_sketch.contigs.len());
+        assert_eq!(name_sidecar.contig_count(), sketch.contigs.len());
         assert_eq!(name_sidecar.contig_name(0)?, "ref");
 
-        for contig_id in 0..hash_sketch.contigs.len() {
-            let hash_minimizers: &[ReferenceMinimizer] = hash_sketch
+        for contig_id in 0..sketch.contigs.len() {
+            let minimizers = sketch
                 .contigs
                 .minimizers(contig_id)
-                .expect("hash contig");
-            let partitioned_minimizers: &[ReferenceMinimizer] = partitioned_sketch
-                .contigs
-                .minimizers(contig_id)
-                .expect("partitioned contig");
-            assert_eq!(hash_minimizers, partitioned_minimizers);
-
-            for minimizer in hash_minimizers {
-                assert_eq!(
-                    hash_sketch.index.get(&minimizer.hash),
-                    partitioned_sketch.index.get(&minimizer.hash)
-                );
+                .expect("persisted contig minimizers");
+            for minimizer in minimizers {
+                let hits = sketch
+                    .index
+                    .get(&minimizer.hash)
+                    .expect("persisted minimizer lookup");
+                assert!(hits.iter().any(|hit| {
+                    hit.reference_contig_id as usize == contig_id
+                        && hit.position == minimizer.position
+                }));
             }
         }
 
-        drop(hash_sketch);
-        drop(partitioned_sketch);
+        drop(sketch);
         drop(name_sidecar);
         fs::remove_dir_all(directory)?;
-
         Ok(())
     }
 
     #[test]
-    fn partitioned_sketch_matches_hash_for_odd_and_even_key_counts() -> io::Result<()> {
+    fn persisted_sketch_round_trips_odd_and_even_key_counts() -> io::Result<()> {
         let odd_sequence: Vec<u8> = (0..9000)
             .map(|i| b"ACGTGCAATTCG"[i % b"ACGTGCAATTCG".len()])
             .collect();
-        assert_partitioned_matches_hash(&odd_sequence, 1, "odd")?;
+        assert_persisted_sketch_round_trips(&odd_sequence, 1, "odd")?;
 
         let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
         let even_sequence: Vec<u8> = (0..9000)
@@ -1189,6 +900,6 @@ mod tests {
                 b"ACGT"[(state & 3) as usize]
             })
             .collect();
-        assert_partitioned_matches_hash(&even_sequence, 0, "even")
+        assert_persisted_sketch_round_trips(&even_sequence, 0, "even")
     }
 }

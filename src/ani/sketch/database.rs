@@ -25,9 +25,8 @@ use crate::ani::{
             build_global_frequency_artifact, GlobalFrequencyArtifactStats, GlobalFrequencyIndex,
         },
         partition::{
-            database_build_parallelism, effective_index_build_mode,
-            estimate_partitioned_shard_memory_bytes, plan_shards_by_minimizers,
-            shard_manifest_compatibility_error, IndexBuildMode,
+            database_build_parallelism, estimate_partitioned_shard_memory_bytes,
+            plan_shards_by_minimizers, shard_manifest_compatibility_error,
         },
         serialize::{
             build_generation_id, legacy_sketch_path, manifest_path, reference_list_checksum,
@@ -156,7 +155,6 @@ impl SketchDatabase {
         let ShardedBuildOptions {
             tmp_dir,
             max_shard_minimizers,
-            index_build_mode,
             threads,
             ..
         } = shard_opts;
@@ -234,19 +232,15 @@ impl SketchDatabase {
                 .with_build_progress(&generation_id, shard_index)?;
 
             if runtime_options.progress_enabled {
-                let effective_index_build_mode: IndexBuildMode =
-                    effective_index_build_mode(index_build_mode, shard_plan.estimated_minimizers);
                 emit_progress(
                         "database_build",
                         &format!(
-                            "event=shard_start\tgeneration_id={generation_id}\tshard={shard_index}\tfirst_reference={first_reference}\treference_count={}\testimated_minimizers={}\testimated_memory_mib={:.3}\tindex_build_mode={}\trequested_index_build_mode={}\texecutor_threads={threads}\tpath={}",
+                            "event=shard_start\tgeneration_id={generation_id}\tshard={shard_index}\tfirst_reference={first_reference}\treference_count={}\testimated_minimizers={}\testimated_memory_mib={:.3}\tbuild_strategy=external_memory\texecutor_threads={threads}\tpath={}",
                             reference_chunk.len(),
                             shard_plan.estimated_minimizers,
                             memory_mib(estimate_partitioned_shard_memory_bytes(
                                 shard_plan.estimated_minimizers
                             )),
-                            effective_index_build_mode.name(),
-                            index_build_mode.name(),
                             shard_path.display()
                         ),
                         build_start,
@@ -259,7 +253,6 @@ impl SketchDatabase {
                 &shard_path,
                 tmp_dir,
                 shard_plan.estimated_minimizers,
-                index_build_mode,
                 shard_runtime_options,
             )?;
             let file_bytes: u64 = fs::metadata(&shard_path)?.len();
@@ -527,7 +520,7 @@ mod tests {
         runtime::RuntimeOptions,
         sketch::{
             database::SketchDatabase,
-            partition::{shard_manifest_compatibility_error, IndexBuildMode},
+            partition::shard_manifest_compatibility_error,
             serialize::{
                 global_frequency_path, manifest_path, reference_list_checksum, shard_entry_path,
                 shard_path, NameSidecar,
@@ -646,7 +639,6 @@ mod tests {
             ShardedBuildOptions {
                 tmp_dir: None,
                 max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
-                index_build_mode: IndexBuildMode::Auto,
                 threads: 1,
                 force_rebuild: false,
             },
@@ -695,7 +687,6 @@ mod tests {
         let build_options = ShardedBuildOptions {
             tmp_dir: Some(&directory),
             max_shard_minimizers: DEFAULT_MAX_SHARD_MINIMIZERS,
-            index_build_mode: IndexBuildMode::Auto,
             threads: 1,
             force_rebuild: true,
         };
