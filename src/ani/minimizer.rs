@@ -18,6 +18,8 @@ pub(crate) struct SlidingSketchCounter {
     reference_distinct_count: usize,
     /// Coordinate IDs in the same positional order as the prepared reference slice.
     reference_ids: Vec<usize>,
+    small: SmallRanks,
+    use_small: bool,
     pub(crate) active: Fenwick,
     pub(crate) shared: Fenwick,
     pub(crate) sketch_size: usize,
@@ -41,7 +43,95 @@ pub(crate) struct Fenwick {
     pub(crate) total: i32,
 }
 
+#[derive(Default)]
+struct SmallRanks {
+    active: [u64; 8],
+    shared: [u64; 8],
+}
+
+impl SmallRanks {
+    fn set(words: &mut [u64; 8], index: usize, present: bool) {
+        let mask = 1u64 << (index % 64);
+        if present {
+            words[index / 64] |= mask;
+        } else {
+            words[index / 64] &= !mask;
+        }
+    }
+
+    fn reset(&mut self, query_present: &[bool]) {
+        debug_assert!(query_present.len() <= 512);
+        self.active.fill(0);
+        self.shared.fill(0);
+        for (index, &present) in query_present.iter().enumerate() {
+            if present {
+                Self::set(&mut self.active, index, true);
+            }
+        }
+    }
+
+    fn transition(&mut self, index: usize, is_query: bool, present: bool) {
+        if is_query {
+            Self::set(&mut self.shared, index, present);
+        } else {
+            Self::set(&mut self.active, index, present);
+        }
+    }
+
+    fn select_word(mut word: u64, mut rank: u32) -> usize {
+        debug_assert!(rank > 0 && rank <= word.count_ones());
+        let mut offset = 0;
+        for half in [32usize, 16, 8, 4, 2, 1] {
+            let lower = word & ((1u64 << half) - 1);
+            let count = lower.count_ones();
+            if rank > count {
+                rank -= count;
+                word >>= half;
+                offset += half;
+            } else {
+                word = lower;
+            }
+        }
+        offset
+    }
+
+    fn shared_count(&self, query_size: usize) -> usize {
+        if query_size == 0 {
+            return 0;
+        }
+        let mut remaining = query_size;
+        let mut shared_before = 0;
+        for i in 0..8 {
+            let count = self.active[i].count_ones() as usize;
+            if remaining > count {
+                remaining -= count;
+                shared_before += self.shared[i].count_ones() as usize;
+            } else {
+                let pivot = Self::select_word(self.active[i], remaining as u32);
+                let mask = u64::MAX >> (63 - pivot);
+                return shared_before + (self.shared[i] & mask).count_ones() as usize;
+            }
+        }
+        0
+    }
+}
+
 impl Fenwick {
+    /// Build all partial sums in O(flags.len()), propagating each node once.
+    fn reset_from_flags(&mut self, flags: &[bool]) {
+        self.reset(flags.len());
+        for (index, &present) in flags.iter().enumerate() {
+            let i = index + 1;
+            let value = i32::from(present);
+            self.tree[i] += value;
+            self.total += value;
+            let parent = i + (i & i.wrapping_neg());
+            if parent < self.tree.len() {
+                self.tree[parent] += self.tree[i];
+            }
+        }
+    }
+
     pub(crate) fn reset(&mut self, len: usize) {
         let tree_len: usize = len.saturating_add(1);
         self.tree.clear();
@@ -108,13 +198,12 @@ impl SlidingSketchCounter {
             *count = 0;
         }
 
-        self.active.reset(self.hashes.len());
-        self.shared.reset(self.hashes.len());
-
-        for (index, &present) in self.query_present.iter().enumerate() {
-            if present {
-                self.active.add(index, 1);
-            }
+        self.use_small = self.hashes.len() <= 512;
+        if self.use_small {
+            self.small.reset(&self.query_present);
+        } else {
+            self.active.reset_from_flags(&self.query_present);
+            self.shared.reset(self.hashes.len());
         }
     }
 
@@ -185,7 +274,10 @@ impl SlidingSketchCounter {
 
         if *count == 0 {
             self.reference_distinct_count += 1;
-            if self.query_present[index] {
+            if self.use_small {
+                self.small
+                    .transition(index, self.query_present[index], true);
+            } else if self.query_present[index] {
                 self.shared.add(index, 1);
             } else {
                 self.active.add(index, 1);
@@ -218,7 +310,10 @@ impl SlidingSketchCounter {
 
         if *count == 0 {
             self.reference_distinct_count -= 1;
-            if self.query_present[index] {
+            if self.use_small {
+                self.small
+                    .transition(index, self.query_present[index], false);
+            } else if self.query_present[index] {
                 self.shared.add(index, -1);
             } else {
                 self.active.add(index, -1);
@@ -227,6 +322,9 @@ impl SlidingSketchCounter {
     }
 
     pub(crate) fn shared_count(&self) -> usize {
+        if self.use_small {
+            return self.small.shared_count(self.sketch_size);
+        }
         let rank = self.sketch_size as i32;
         let Some(pivot) = self.active.select_by_rank(rank) else {
             return 0;
