@@ -14,6 +14,10 @@ pub(crate) struct SlidingSketchCounter {
     pub(crate) hashes: Vec<MinimizerKey>,
     pub(crate) query_present: Vec<bool>,
     pub(crate) reference_counts: Vec<usize>,
+    /// Number of reference coordinates with a nonzero occurrence count.
+    reference_distinct_count: usize,
+    /// Coordinate IDs in the same positional order as the prepared reference slice.
+    reference_ids: Vec<usize>,
     pub(crate) active: Fenwick,
     pub(crate) shared: Fenwick,
     pub(crate) sketch_size: usize,
@@ -99,6 +103,7 @@ impl Fenwick {
 
 impl SlidingSketchCounter {
     pub(crate) fn clear(&mut self) {
+        self.reference_distinct_count = 0;
         for count in &mut self.reference_counts {
             *count = 0;
         }
@@ -148,6 +153,15 @@ impl SlidingSketchCounter {
         self.reference_counts.resize(coordinate_count, 0);
         self.sketch_size = query_minimizers.len();
         self.clear();
+        self.reference_ids.clear();
+        self.reference_ids.reserve(reference_minimizers.len());
+        let hashes = &self.hashes;
+        self.reference_ids
+            .extend(reference_minimizers.iter().map(|m| {
+                hashes
+                    .binary_search(&m.hash)
+                    .expect("reference coordinate missing")
+            }));
     }
 
     pub(crate) fn insert(&mut self, hash: MinimizerKey) {
@@ -159,9 +173,18 @@ impl SlidingSketchCounter {
             .hashes
             .binary_search(&hash)
             .expect("reference minimizer missing from coordinate table");
+        self.insert_index(index);
+    }
+
+    pub(crate) fn insert_reference_at(&mut self, position: usize) {
+        self.insert_index(self.reference_ids[position]);
+    }
+
+    fn insert_index(&mut self, index: usize) {
         let count = &mut self.reference_counts[index];
 
         if *count == 0 {
+            self.reference_distinct_count += 1;
             if self.query_present[index] {
                 self.shared.add(index, 1);
             } else {
@@ -177,6 +200,14 @@ impl SlidingSketchCounter {
             .hashes
             .binary_search(&hash)
             .expect("reference minimizer missing from coordinate table");
+        self.remove_index(index);
+    }
+
+    pub(crate) fn remove_reference_at(&mut self, position: usize) {
+        self.remove_index(self.reference_ids[position]);
+    }
+
+    fn remove_index(&mut self, index: usize) {
         let count = &mut self.reference_counts[index];
 
         if *count == 0 {
@@ -186,6 +217,7 @@ impl SlidingSketchCounter {
         *count -= 1;
 
         if *count == 0 {
+            self.reference_distinct_count -= 1;
             if self.query_present[index] {
                 self.shared.add(index, -1);
             } else {
@@ -204,10 +236,7 @@ impl SlidingSketchCounter {
     }
 
     pub(crate) fn reference_minimizer_count(&self) -> usize {
-        self.reference_counts
-            .iter()
-            .filter(|&&count| count > 0)
-            .count()
+        self.reference_distinct_count
     }
 }
 
@@ -557,6 +586,108 @@ mod tests {
         test_support::repeated_acgt,
     };
     use std::{env, fs, io, path::PathBuf, time::Instant};
+
+    #[test]
+    fn coordinate_ids_preserve_sliding_rank_and_distinct_counts() {
+        use super::SlidingSketchCounter;
+        use crate::ani::model::reference::ReferenceMinimizer;
+        use std::collections::BTreeSet;
+
+        let mut counter = SlidingSketchCounter::default();
+        for size in [0usize, 1, 63, 64, 65, 255, 511, 512, 513, 1024, 3, 0] {
+            let keys: Vec<u32> = (0..size)
+                .map(|i| if i + 1 == size { u32::MAX } else { i as u32 })
+                .collect();
+            for stride in [1, 3] {
+                let query: Vec<_> = keys.iter().step_by(stride).copied().collect();
+                let query_set: BTreeSet<_> = query.iter().copied().collect();
+                let reference: Vec<_> = keys
+                    .iter()
+                    .rev()
+                    .flat_map(|&key| [key, key, key])
+                    .enumerate()
+                    .map(|(position, hash)| ReferenceMinimizer {
+                        hash,
+                        position: position as u32,
+                    })
+                    .collect();
+                for width in [1, 31, 97] {
+                    counter.prepare(&query, &reference);
+                    assert_eq!(counter.reference_minimizer_count(), 0);
+                    assert_eq!(counter.shared_count(), 0);
+                    for end in 0..reference.len() {
+                        counter.insert_reference_at(end);
+                        if end >= width {
+                            counter.remove_reference_at(end - width);
+                        }
+                        let start = (end + 1).saturating_sub(width);
+                        let present: BTreeSet<_> =
+                            reference[start..=end].iter().map(|m| m.hash).collect();
+                        let expected_shared = query_set
+                            .union(&present)
+                            .take(query.len())
+                            .filter(|key| query_set.contains(*key) && present.contains(*key))
+                            .count();
+                        assert_eq!(counter.reference_minimizer_count(), present.len());
+                        assert_eq!(counter.shared_count(), expected_shared);
+                    }
+                    counter.clear();
+                    assert_eq!(counter.reference_minimizer_count(), 0);
+                    assert_eq!(counter.shared_count(), 0);
+                    if !reference.is_empty() {
+                        counter.insert_reference_at(0);
+                        counter.remove_reference_at(0);
+                        counter.remove_reference_at(0);
+                        assert_eq!(counter.reference_minimizer_count(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_reference_count_matches_sliding_windows_and_resets() {
+        use super::SlidingSketchCounter;
+        use crate::ani::model::reference::ReferenceMinimizer;
+        use std::collections::HashSet;
+
+        let keys = [0, 7, 7, u32::MAX, 0, 42, 42, 7, 0, u32::MAX];
+        let reference: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(position, &hash)| ReferenceMinimizer {
+                hash,
+                position: position as u32,
+            })
+            .collect();
+        let mut counter = SlidingSketchCounter::default();
+        for width in 1..=keys.len() {
+            counter.prepare(&[0, 7], &reference);
+            assert_eq!(counter.reference_minimizer_count(), 0);
+            for end in 0..keys.len() {
+                counter.insert(keys[end]);
+                if end >= width {
+                    counter.remove(keys[end - width]);
+                }
+                let start = (end + 1).saturating_sub(width);
+                let expected = keys[start..=end].iter().copied().collect::<HashSet<_>>();
+                assert_eq!(counter.reference_minimizer_count(), expected.len());
+            }
+            // clear() can reuse the same coordinate table for another region.
+            counter.clear();
+            assert_eq!(counter.reference_minimizer_count(), 0);
+            counter.remove(7); // An absent coordinate must not underflow the total.
+            assert_eq!(counter.reference_minimizer_count(), 0);
+            counter.insert(42); // Counts reference-only keys as well as query keys.
+            assert_eq!(counter.reference_minimizer_count(), 1);
+        }
+        counter.prepare(&[7], &[]);
+        assert_eq!(counter.reference_minimizer_count(), 0);
+        counter.insert(7);
+        assert_eq!(counter.reference_minimizer_count(), 1);
+        counter.prepare(&[], &[]);
+        assert_eq!(counter.reference_minimizer_count(), 0);
+    }
 
     #[test]
     fn reference_minimizer_window_estimate_respects_split_n() -> io::Result<()> {

@@ -46,6 +46,11 @@ impl ReferenceSketch {
         seed_hits.clear();
         candidate_regions.clear();
 
+        // usize::MAX is the disabled-filter sentinel. Release mapping needs
+        // only presence/local ranges in that case. Debug metrics still report
+        // actual database-wide frequencies, so keep their original resolution.
+        let needs_database_frequency = frequency_threshold != usize::MAX || cfg!(debug_assertions);
+
         // Batch-compute MPHF slots and sort ascending so slot_keys / hit_offsets /
         // hit_counts are accessed sequentially rather than randomly across the mmap.
         self.index
@@ -55,9 +60,13 @@ impl ReferenceSketch {
             // Hash index path has no slot ordering; fall back to direct lookup.
             for minimizer in query_minimizers {
                 let hits: Option<&[SeedHit]> = self.index.get(minimizer);
-                let database_frequency: Option<usize> = hits
-                    .map(<[SeedHit]>::len)
-                    .map(|count| self.database_frequency(minimizer, count));
+                let database_frequency: Option<usize> = hits.map(<[SeedHit]>::len).map(|count| {
+                    if needs_database_frequency {
+                        self.database_frequency(minimizer, count)
+                    } else {
+                        count
+                    }
+                });
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
                     metrics.record_seed_lookup(database_frequency, frequency_threshold);
@@ -76,9 +85,14 @@ impl ReferenceSketch {
             let mut accepted_hit_count: usize = 0;
             for &(slot, minimizer) in slot_sorted_minimizers.iter() {
                 let hit_range = self.index.hit_range_by_slot(slot as usize, &minimizer);
-                let database_frequency: Option<usize> = hit_range
-                    .map(|(_, count)| count)
-                    .map(|count| self.database_frequency(&minimizer, count));
+                let database_frequency: Option<usize> =
+                    hit_range.map(|(_, count)| count).map(|count| {
+                        if needs_database_frequency {
+                            self.database_frequency(&minimizer, count)
+                        } else {
+                            count
+                        }
+                    });
                 #[cfg(debug_assertions)]
                 if let Some(metrics) = mapping_metrics.as_deref_mut() {
                     metrics.record_seed_lookup(database_frequency, frequency_threshold);
@@ -223,13 +237,13 @@ impl ReferenceSketch {
             }
 
             if start_idx != first_start {
-                counter.remove(minimizers[start_idx - 1].hash);
+                counter.remove_reference_at(start_idx - 1 - first_start);
             }
 
             let end_position: u32 = start_position.saturating_add(count_minimizer_windows);
 
             while window_end < last_end && minimizers[window_end].position < end_position {
-                counter.insert(minimizers[window_end].hash);
+                counter.insert_reference_at(window_end - first_start);
                 window_end += 1;
             }
 
