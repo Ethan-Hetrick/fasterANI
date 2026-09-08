@@ -903,3 +903,145 @@ mod tests {
         assert_persisted_sketch_round_trips(&even_sequence, 0, "even")
     }
 }
+
+impl ReferenceSketch {
+    /// Repack retained genomes using persisted minimizers, without sequence extraction.
+    /// Uses the same disk partitions as a fresh build; only one affected shard is open.
+    pub(crate) fn save_retaining_files(
+        &self,
+        keep: &[bool],
+        params: SketchParams,
+        cache_path: &Path,
+        tmp_dir: Option<&Path>,
+        runtime: RuntimeOptions,
+    ) -> io::Result<SketchBuildStats> {
+        if rayon::current_thread_index().is_none() {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(runtime.effective_worker_threads())
+                .build()
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            return pool
+                .install(|| self.save_retaining_files(keep, params, cache_path, tmp_dir, runtime));
+        }
+        if keep.len() != self.files.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid retained-file mask",
+            ));
+        }
+        let old_names = self.contig_names.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "contig names must be loaded to update a shard",
+            )
+        })?;
+        if old_names.len() != self.contigs.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "contig metadata length mismatch",
+            ));
+        }
+        let mut files = Vec::new();
+        let mut file_ids = vec![None; keep.len()];
+        for (id, file) in self.files.iter().enumerate() {
+            if keep[id] {
+                file_ids[id] = Some(files.len());
+                files.push(file.clone());
+            }
+        }
+        let mut estimated = 0usize;
+        for id in 0..self.contigs.len() {
+            let file = self
+                .contigs
+                .file_id(id)
+                .ok_or_else(|| io::Error::other("missing contig file ID"))?;
+            if file_ids
+                .get(file)
+                .ok_or_else(|| io::Error::other("invalid contig file ID"))?
+                .is_some()
+            {
+                estimated = estimated
+                    .checked_add(
+                        self.contigs
+                            .minimizers(id)
+                            .ok_or_else(|| io::Error::other("missing contig minimizers"))?
+                            .len(),
+                    )
+                    .ok_or_else(|| io::Error::other("minimizer count overflow"))?;
+            }
+        }
+        let plan = partition_build_plan(estimated);
+        let mut partitions =
+            PartitionWriters::new(plan.partition_count, tmp_dir, PARTITION_BUFFER_RECORDS)?;
+        let (scratch, file) = ScratchFile::create(tmp_dir, "update-minimizers")?;
+        let mut writer = BufWriter::new(file);
+        let mut records = Vec::new();
+        let mut names = Vec::new();
+        let mut count = 0usize;
+        for (old_id, name) in old_names.iter().enumerate() {
+            let old_file = self
+                .contigs
+                .file_id(old_id)
+                .ok_or_else(|| io::Error::other("missing file ID"))?;
+            let Some(file_id) = file_ids[old_file] else {
+                continue;
+            };
+            let minimizers = self
+                .contigs
+                .minimizers(old_id)
+                .ok_or_else(|| io::Error::other("missing minimizers"))?;
+            let new_id = u32::try_from(records.len()).map_err(io::Error::other)?;
+            for chunk in minimizers.chunks(PARTITION_BUFFER_RECORDS) {
+                let hits: Vec<_> = chunk
+                    .iter()
+                    .map(|m| PartitionHitRecord {
+                        key: m.hash,
+                        hit: SeedHit {
+                            reference_contig_id: new_id,
+                            position: m.position,
+                        },
+                    })
+                    .collect();
+                partitions.push_batch(&hits)?;
+            }
+            records.push(ContigRecord {
+                minimizer_offset: u64::try_from(count).map_err(io::Error::other)?,
+                minimizer_count: u32::try_from(minimizers.len()).map_err(io::Error::other)?,
+                file_id: u32::try_from(file_id).map_err(io::Error::other)?,
+            });
+            writer.write_all(slice_as_bytes(minimizers))?;
+            count = count
+                .checked_add(minimizers.len())
+                .ok_or_else(|| io::Error::other("minimizer overflow"))?;
+            let mut name = name.clone();
+            name.file_id = file_id;
+            names.push(name);
+        }
+        writer.flush()?;
+        drop(writer);
+        partitions.flush_all()?;
+        let reference_count = files.len();
+        let reference_contig_count = records.len();
+        let mapped_reference_length = files.iter().map(|f| f.mapped_length).sum();
+        let unique_minimizer_count = Self::save_partitioned_streamed_cache(
+            cache_path,
+            params,
+            files,
+            records,
+            names,
+            count,
+            &scratch,
+            &partitions,
+            plan,
+            tmp_dir,
+            runtime,
+        )?;
+        Ok(SketchBuildStats {
+            reference_count,
+            reference_contig_count,
+            mapped_reference_length,
+            reference_minimizer_count: count,
+            unique_minimizer_count,
+        })
+    }
+}

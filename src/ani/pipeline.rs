@@ -72,7 +72,7 @@ pub fn run() -> io::Result<()> {
 
 /// Run the fasterANI command-line application using a caller-provided process start time.
 pub fn run_started_at(total_start: Instant) -> io::Result<()> {
-    let Some(args) = parse_cli_args()? else {
+    let Some(mut args) = parse_cli_args()? else {
         return Ok(());
     };
     let progress_enabled: bool = args.verbose;
@@ -81,6 +81,53 @@ pub fn run_started_at(total_start: Instant) -> io::Result<()> {
         .with_progress_enabled(progress_enabled)
         .with_worker_threads(args.threads)
         .with_mphf_gamma(args.mphf_gamma);
+    let params = SketchParams {
+        kmer_size: args.kmer_size,
+        window_size: args.window_size,
+        minimizer_hash_seed: args.minimizer_hash_seed,
+        fragment_length: args.fragment_length,
+        min_fragment_length: args.min_fragment_length,
+        split_n_run: args.split_n_run,
+    };
+    if args.command == crate::ani::cli::commands::Command::Inspect {
+        let mut output: Box<dyn Write> = match args.out_path.as_ref() {
+            Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
+            None => Box::new(io::stdout().lock()),
+        };
+        SketchDatabase::inspect(
+            args.sketch_path.as_deref().expect("validated prefix"),
+            params,
+            runtime_options,
+            output.as_mut(),
+        )?;
+        return output.flush();
+    }
+    if args.command == crate::ani::cli::commands::Command::Update {
+        let manifest = SketchDatabase::update(
+            args.sketch_path.as_deref().expect("validated prefix"),
+            &args.references,
+            &args.remove_ids,
+            params,
+            ShardedBuildOptions {
+                max_shard_size_bytes: args.max_shard_size_bytes,
+                tmp_dir: args.tmp_dir.as_deref(),
+                threads: args.threads,
+            },
+            runtime_options,
+        )?;
+        if !args.quiet {
+            eprintln!(
+                "UPDATED\tgeneration={}\treferences={}\tshards={}",
+                manifest.generation_id,
+                manifest.total_references,
+                manifest.shards.len()
+            );
+        }
+        args.references.clear();
+        if args.queries.is_empty() {
+            return Ok(());
+        }
+    }
     if !fastani_compatible_fragment_mode(
         args.fragment_length,
         args.fragment_stride,

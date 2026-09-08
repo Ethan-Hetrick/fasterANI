@@ -8,6 +8,8 @@ use super::CliArgs;
 pub(super) struct RuntimeStartupOutput {
     pub(super) params_file: Option<StartupValue>,
     pub(super) reference_files: Vec<StartupValue>,
+    pub(super) add_lists: Vec<StartupValue>,
+    pub(super) remove_lists: Vec<StartupValue>,
     pub(super) reference_lists: Vec<StartupValue>,
     pub(super) query_files: Vec<StartupValue>,
     pub(super) query_lists: Vec<StartupValue>,
@@ -18,6 +20,7 @@ pub(super) struct RuntimeStartupOutput {
 pub(super) enum ParameterSource {
     ParamsFile,
     Cli,
+    Sketch,
 }
 
 impl ParameterSource {
@@ -25,6 +28,7 @@ impl ParameterSource {
         match self {
             Self::ParamsFile => "params file",
             Self::Cli => "CLI",
+            Self::Sketch => "saved sketch",
         }
     }
 }
@@ -46,6 +50,11 @@ impl StartupValue {
 impl RuntimeStartupOutput {
     pub(super) fn emit(&self, args: &CliArgs, sources: &ParameterSources, skip_validation: bool) {
         let mut entries: Vec<String> = Vec::new();
+        if let Some(name) = args.command.name() {
+            entries.push(format!("command = \"{name}\""));
+        }
+        push_toml_array(&mut entries, "add_lists", &self.add_lists);
+        push_toml_array(&mut entries, "remove_lists", &self.remove_lists);
 
         push_cli_metadata_string(&mut entries, "params_file", self.params_file.as_ref());
         push_toml_array(&mut entries, "reference_files", &self.reference_files);

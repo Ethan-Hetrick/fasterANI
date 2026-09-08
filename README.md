@@ -17,14 +17,15 @@ For a repository-local release build instead:
 cargo build --release
 ```
 
-The executable is written to `target/release/fasterANI`.
+Executables are written to `target/release/fasterANI` and its lowercase alias
+`target/release/fasterani`. Use Rust 1.89 or newer; this change was tested with 1.98.1.
 
 ## Quick start
 
 Compare FASTA files directly:
 
 ```bash
-target/release/fasterANI \
+target/release/fasterANI query \
   --reference references/ref.fna \
   --query queries/query.fna \
   --out results.tsv \
@@ -32,19 +33,19 @@ target/release/fasterANI \
 ```
 
 Build an on-disk reference sketch from a file containing one FASTA path per
-line. Omitting query inputs selects build-only mode:
+line. The `sketch` command builds without querying:
 
 ```bash
-target/release/fasterANI \
+target/release/fasterANI sketch \
   --reference-list references.txt \
-  --reference-sketch sketches/reference-db \
+  --output sketches/reference-db \
   --threads 8
 ```
 
 Query that sketch later without resupplying the references:
 
 ```bash
-target/release/fasterANI \
+target/release/fasterANI query \
   --reference-sketch sketches/reference-db \
   --query queries/query.fna \
   --out results.tsv \
@@ -64,10 +65,44 @@ also use one bounded background thread to prefetch the next shard.
   `--minimizer-hash-seed` (default `42`).
 - Keep the startup parameter record from stderr, or store the same values in a
   params file and pass it with `--params-file`.
-- Use the same seeding settings when building and querying a reference sketch.
+- Saved-database subcommands inherit sketch settings and reject conflicting overrides.
 - Reusing a sketch with reference inputs verifies their ordered path labels and
-  count, not the FASTA byte contents. Use a new sketch prefix after editing a
-  reference in place.
+  count for original builds, or ordered stored identifiers after an update. Neither
+  validates FASTA byte contents. Use an explicit remove/add update after editing an
+  assembly in place.
 - Leave input validation enabled. `--skip-validation` bypasses FASTA path and
   size checks, while `--quiet` suppresses the startup parameter record and final
   summary.
+
+## Update or inspect a saved database
+
+```bash
+fasterani inspect --reference-sketch sketches/reference-db
+fasterani update --reference-sketch sketches/reference-db --add-list additions.txt
+fasterani update --reference-sketch sketches/reference-db --remove-list removals.txt
+# Replace assemblies in one transaction:
+fasterani update --reference-sketch sketches/reference-db \
+  --remove-list old-assemblies.txt --add-list updated-assemblies.txt
+```
+
+Addition lists contain FASTA paths (plain or gzip), one per line. Removal lists
+contain exact stored reference identifiers, one per line: the FASTA basenames
+shown by `inspect`, including extensions. Original FASTAs are not required for
+removal. Basenames must be unique; adding an existing identifier requires removing
+it in the same transaction. This is identity-based validation, not sequence-based
+deduplication or automatic accession/version detection.
+
+Updates retain unaffected shards and repack affected shards from stored minimizers.
+Global frequencies are updated by merging counts, and the manifest is published
+last. Each old manifest is saved as `<prefix>.<generation>.manifest.json`; its shard,
+name-sidecar, and frequency artifacts remain available. Restoring that manifest at
+the original `<prefix>.manifest.json` selects the old version; preserve the newer
+manifest first if you need it too. No automatic artifact garbage collection is
+performed. Readers can finish on the previous generation while an update runs;
+cooperating writers are serialized by a filesystem lock.
+
+`sketch` and `update` accept list files only, never positional FASTAs or
+`--reference`. `update` can also accept query inputs to query after a successful
+update. The previous option-only interface remains available. Updates require a
+manifest-backed database; legacy single-file caches remain queryable through the
+option-only interface. See [notes.md](notes.md) for the implementation and test summary.

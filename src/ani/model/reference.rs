@@ -190,6 +190,8 @@ pub(crate) struct ShardManifest {
     pub(crate) total_unique_minimizers: usize,
     pub(crate) build_args: Vec<String>,
     pub(crate) reference_list_checksum: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reference_identifiers: Option<Vec<String>>,
     pub(crate) shards: Vec<ShardManifestEntry>,
 }
 

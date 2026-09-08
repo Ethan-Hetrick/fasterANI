@@ -75,9 +75,18 @@ impl SketchDatabase {
             let manifest: ShardManifest = Self::load_manifest(prefix, params)?;
             if !references.is_empty() {
                 let supplied_checksum: u64 = reference_list_checksum(references);
-                if references.len() != manifest.total_references
-                    || supplied_checksum != manifest.reference_list_checksum
-                {
+                // Older shards retain basenames, not their original source paths.
+                // Updated generations therefore validate ordered stored identities;
+                // fresh/legacy generations keep their original path-checksum rule.
+                let matches = if let Some(ids) = &manifest.reference_identifiers {
+                    *ids == references
+                        .iter()
+                        .map(|r| crate::ani::io_util::sketch_reference_name(&r.output_label))
+                        .collect::<Vec<_>>()
+                } else {
+                    supplied_checksum == manifest.reference_list_checksum
+                };
+                if references.len() != manifest.total_references || !matches {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
@@ -137,6 +146,15 @@ impl SketchDatabase {
         shard_opts: ShardedBuildOptions<'_>,
         runtime_options: RuntimeOptions,
     ) -> io::Result<ShardManifest> {
+        let _lock = super::update::DatabaseWriteLock::acquire(prefix)?;
+        if manifest_path(prefix).exists() || legacy_sketch_path(prefix).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "database already exists; use update",
+            ));
+        }
+        super::update::addition_ids(references)?;
+        let build_start = Instant::now();
         let SketchParams {
             kmer_size,
             window_size,
@@ -144,6 +162,103 @@ impl SketchDatabase {
             fragment_length,
             min_fragment_length,
             split_n_run,
+        } = params;
+        let ShardedBuildOptions {
+            max_shard_size_bytes,
+            tmp_dir,
+            ..
+        } = shard_opts;
+        let generation_id = build_generation_id()?;
+        let shards = Self::build_shard_files(
+            references,
+            params,
+            prefix,
+            shard_opts,
+            runtime_options,
+            &generation_id,
+            1,
+        )?;
+        let total_reference_contigs: usize =
+            shards.iter().map(|shard| shard.reference_contigs).sum();
+        let total_mapped_reference_length: u64 = shards
+            .iter()
+            .map(|shard| shard.mapped_reference_length)
+            .sum();
+        let total_reference_minimizers: usize =
+            shards.iter().map(|shard| shard.reference_minimizers).sum();
+        let total_shard_unique_minimizers: usize =
+            shards.iter().map(|shard| shard.unique_minimizers).sum();
+        let global_frequency_stats: GlobalFrequencyArtifactStats = build_global_frequency_artifact(
+            prefix,
+            &generation_id,
+            &shards,
+            params,
+            tmp_dir,
+            runtime_options,
+        )?;
+
+        let manifest: ShardManifest = ShardManifest {
+            sketch_format_version: SKETCH_VERSION,
+            database_schema_version: SKETCH_DATABASE_SCHEMA_VERSION,
+            k: kmer_size,
+            w: window_size,
+            minimizer_hash_seed,
+            fragment_length,
+            min_fragment_length,
+            split_n_run,
+            max_shard_size_bytes,
+            total_references: references.len(),
+            total_reference_contigs,
+            total_mapped_reference_length,
+            total_reference_minimizers,
+            total_shard_unique_minimizers,
+            build_unix_seconds: unix_timestamp_seconds()?,
+            generation_id,
+            global_frequency_filename: global_frequency_stats.filename,
+            global_frequency_file_bytes: global_frequency_stats.file_bytes,
+            total_unique_minimizers: global_frequency_stats.unique_minimizers,
+            build_args: env::args().collect(),
+            reference_list_checksum: reference_list_checksum(references),
+            reference_identifiers: None,
+            shards,
+        };
+
+        Self::write_manifest(prefix, &manifest)?;
+        if runtime_options.progress_enabled {
+            emit_progress(
+                "database_build",
+                &format!(
+                    "event=complete\tgeneration_id={}\tmanifest={}\tshards={}\treferences={}\tcontigs={}\treference_minimizers={}\tunique_minimizers={}\tglobal_frequency_file_bytes={}",
+                    manifest.generation_id,
+                    manifest_path(prefix).display(),
+                    manifest.shards.len(),
+                    manifest.total_references,
+                    manifest.total_reference_contigs,
+                    manifest.total_reference_minimizers,
+                    manifest.total_unique_minimizers,
+                    manifest.global_frequency_file_bytes
+                ),
+                build_start,
+            );
+        }
+
+        Ok(manifest)
+    }
+
+    pub(crate) fn build_shard_files(
+        references: &[FastaInput],
+        params: SketchParams,
+        prefix: &Path,
+        shard_opts: ShardedBuildOptions<'_>,
+        runtime_options: RuntimeOptions,
+        generation_id: &str,
+        first_shard_index: usize,
+    ) -> io::Result<Vec<ShardManifestEntry>> {
+        let SketchParams {
+            kmer_size,
+            window_size,
+            split_n_run,
+            ..
         } = params;
         let ShardedBuildOptions {
             tmp_dir,
@@ -160,7 +275,6 @@ impl SketchDatabase {
         }
 
         let build_start: Instant = Instant::now();
-        let generation_id: String = build_generation_id()?;
         if runtime_options.progress_enabled {
             emit_progress(
                 "database_build",
@@ -211,7 +325,9 @@ impl SketchDatabase {
         let build_shard = |shard_offset: usize,
                            shard_plan: &ShardPlan|
          -> io::Result<ShardBuildResult> {
-            let shard_index: usize = shard_offset + 1;
+            let shard_index = first_shard_index.checked_add(shard_offset).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "shard index overflow")
+            })?;
             let first_reference: usize = shard_plan.first_reference;
             let shard_end: usize = first_reference
                 .checked_add(shard_plan.reference_count)
@@ -308,70 +424,7 @@ impl SketchDatabase {
             .into_iter()
             .map(|result| result.entry)
             .collect();
-        let total_reference_contigs: usize =
-            shards.iter().map(|shard| shard.reference_contigs).sum();
-        let total_mapped_reference_length: u64 = shards
-            .iter()
-            .map(|shard| shard.mapped_reference_length)
-            .sum();
-        let total_reference_minimizers: usize =
-            shards.iter().map(|shard| shard.reference_minimizers).sum();
-        let total_shard_unique_minimizers: usize =
-            shards.iter().map(|shard| shard.unique_minimizers).sum();
-        let global_frequency_stats: GlobalFrequencyArtifactStats = build_global_frequency_artifact(
-            prefix,
-            &generation_id,
-            &shards,
-            params,
-            tmp_dir,
-            runtime_options,
-        )?;
-
-        let manifest: ShardManifest = ShardManifest {
-            sketch_format_version: SKETCH_VERSION,
-            database_schema_version: SKETCH_DATABASE_SCHEMA_VERSION,
-            k: kmer_size,
-            w: window_size,
-            minimizer_hash_seed,
-            fragment_length,
-            min_fragment_length,
-            split_n_run,
-            max_shard_size_bytes,
-            total_references: references.len(),
-            total_reference_contigs,
-            total_mapped_reference_length,
-            total_reference_minimizers,
-            total_shard_unique_minimizers,
-            build_unix_seconds: unix_timestamp_seconds()?,
-            generation_id,
-            global_frequency_filename: global_frequency_stats.filename,
-            global_frequency_file_bytes: global_frequency_stats.file_bytes,
-            total_unique_minimizers: global_frequency_stats.unique_minimizers,
-            build_args: env::args().collect(),
-            reference_list_checksum: reference_list_checksum(references),
-            shards,
-        };
-
-        Self::write_manifest(prefix, &manifest)?;
-        if runtime_options.progress_enabled {
-            emit_progress(
-                "database_build",
-                &format!(
-                    "event=complete\tgeneration_id={}\tmanifest={}\tshards={}\treferences={}\tcontigs={}\treference_minimizers={}\tunique_minimizers={}\tglobal_frequency_file_bytes={}",
-                    manifest.generation_id,
-                    manifest_path(prefix).display(),
-                    manifest.shards.len(),
-                    manifest.total_references,
-                    manifest.total_reference_contigs,
-                    manifest.total_reference_minimizers,
-                    manifest.total_unique_minimizers,
-                    manifest.global_frequency_file_bytes
-                ),
-                build_start,
-            );
-        }
-
-        Ok(manifest)
+        Ok(shards)
     }
 
     pub(crate) fn write_manifest(prefix: &Path, manifest: &ShardManifest) -> io::Result<()> {
@@ -392,15 +445,7 @@ impl SketchDatabase {
         write_bytes_atomically(&path, &manifest_bytes)
     }
 
-    pub(crate) fn load_manifest(prefix: &Path, params: SketchParams) -> io::Result<ShardManifest> {
-        let SketchParams {
-            kmer_size,
-            window_size,
-            minimizer_hash_seed,
-            fragment_length,
-            min_fragment_length,
-            split_n_run,
-        } = params;
+    pub(crate) fn read_manifest(prefix: &Path) -> io::Result<ShardManifest> {
         let path: PathBuf = manifest_path(prefix);
         let manifest_bytes: Vec<u8> = fs::read(&path)?;
         let manifest: ShardManifest = serde_json::from_slice(&manifest_bytes).map_err(|err| {
@@ -412,6 +457,20 @@ impl SketchDatabase {
                 ),
             )
         })?;
+
+        Ok(manifest)
+    }
+
+    pub(crate) fn load_manifest(prefix: &Path, params: SketchParams) -> io::Result<ShardManifest> {
+        let SketchParams {
+            kmer_size,
+            window_size,
+            minimizer_hash_seed,
+            fragment_length,
+            min_fragment_length,
+            split_n_run,
+        } = params;
+        let manifest = Self::read_manifest(prefix)?;
 
         if let Some(error) = shard_manifest_compatibility_error(
             &manifest,

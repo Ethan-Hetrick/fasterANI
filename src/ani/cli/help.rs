@@ -4,8 +4,24 @@ pub(super) fn usage() -> &'static str {
     "usage: fasterANI [(--reference <ref.fa> | --reference-list <refs.txt>)...] \
 [(--query <query.fa> | --query-list <queries.txt>)...] [options]
 
+Commands:
+  fasterANI query --reference-list refs.txt --query-list queries.txt
+  fasterANI query --reference-sketch db --query-list queries.txt
+  fasterANI sketch --reference-list refs.txt --output db
+  fasterANI update --reference-sketch db --add-list additions.txt --remove-list removals.txt
+  fasterANI inspect --reference-sketch db [--out references.tsv]
+
+  sketch accepts reference lists only; update accepts add/remove lists only.
+  Each list contains one entry per line. Removal entries are exact stored FASTA
+  basenames (see inspect); the old FASTA files need not exist. Either update list
+  may be omitted. Both lists together perform an atomic replacement operation.
+  Existing shards are retained; only shards affected by removal are rebuilt.
+  Saved database parameters are inherited; conflicting overrides are rejected.
+  update optionally accepts queries to run after successful publication.
+  The older option-only invocation remains supported.
+
 Inputs:
-  --params-file <path>         Load runtime parameters from a TOML file.
+  --params-file, --params <path>         Load runtime parameters from a TOML file.
                                  Scalar CLI values override scalar file values.
                                  Reference/query inputs from both sources are combined.
                                  Relative paths in the file are resolved relative

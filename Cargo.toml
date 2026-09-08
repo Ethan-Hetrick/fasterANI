@@ -2,6 +2,7 @@
 name = "fasterANI"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 
 [lib]
 name = "faster_ani"
@@ -10,6 +11,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "fasterANI"
 path = "src/main.rs"
+
+[[bin]]
+name = "fasterani"
+path = "src/bin/fasterani.rs"
 
 [dependencies]
 boomphf = { version = "0.6.0", features = ["serde"] }

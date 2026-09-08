@@ -7,6 +7,9 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ParamsFileConfig {
+    pub(crate) command: Option<String>,
+    pub(crate) add_lists: Option<Vec<String>>,
+    pub(crate) remove_lists: Option<Vec<String>>,
     pub(crate) threads: Option<usize>,
     pub(crate) freq_threshold_percent: Option<f64>,
     pub(crate) minmer_count: Option<usize>,

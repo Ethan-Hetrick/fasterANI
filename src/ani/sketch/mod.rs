@@ -9,3 +9,4 @@ pub(crate) mod partition;
 pub(crate) mod persist;
 pub(crate) mod serialize;
 pub(crate) mod stream;
+pub(crate) mod update;

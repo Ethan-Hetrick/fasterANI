@@ -1,8 +1,11 @@
 //! Command-line argument parsing and the `--help` text.
 
+pub(crate) mod commands;
 mod effective_config;
 mod help;
 mod input;
+
+use commands::Command;
 
 use std::{
     collections::HashSet,
@@ -36,6 +39,8 @@ use input::{
 
 /// Parsed command-line arguments.
 pub(crate) struct CliArgs {
+    pub(crate) command: Command,
+    pub(crate) remove_ids: Vec<String>,
     pub(crate) references: Vec<FastaInput>,
     pub(crate) queries: Vec<FastaInput>,
     pub(crate) sketch_path: Option<PathBuf>,
@@ -191,8 +196,9 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let raw_args: Vec<String> = args.into_iter().map(Into::into).collect();
-    if raw_args.is_empty() {
+    let mut raw_args: Vec<String> = args.into_iter().map(Into::into).collect();
+    let explicit_command = Command::take(&mut raw_args)?;
+    if raw_args.is_empty() && explicit_command.is_none() {
         eprintln!("{}", usage());
         return Ok(None);
     }
@@ -202,10 +208,19 @@ where
         Some(path) => load_params_file(path)?,
         None => ParamsFileConfig::default(),
     };
+    let command = explicit_command
+        .or(params_file_config
+            .command
+            .as_deref()
+            .map(Command::parse)
+            .transpose()?)
+        .unwrap_or(Command::Legacy);
+    commands::validate_file_inputs(command, &params_file_config)?;
     let params_file_base_dir = params_file_path
         .as_deref()
         .and_then(|path| params_file_base_dir(Path::new(path)));
 
+    let mut remove_ids = Vec::new();
     let mut references: Vec<FastaInput> = Vec::new();
     let mut queries: Vec<FastaInput> = Vec::new();
     let mut startup_output = RuntimeStartupOutput::default();
@@ -270,6 +285,27 @@ where
                 &mut startup_output,
             )?;
         }
+    }
+    for value in params_file_config.add_lists.iter().flatten() {
+        add_reference_list(
+            value,
+            ParameterSource::ParamsFile,
+            params_file_base_dir,
+            skip_validation,
+            &mut references,
+            &mut startup_output,
+        )?;
+        startup_output
+            .add_lists
+            .push(startup_output.reference_lists.pop().unwrap());
+    }
+    for value in params_file_config.remove_lists.iter().flatten() {
+        commands::add_removals(value, params_file_base_dir, &mut remove_ids)?;
+        let path = resolve_path_from_base(value, params_file_base_dir)?;
+        startup_output.remove_lists.push(StartupValue::new(
+            path.to_string_lossy(),
+            ParameterSource::ParamsFile,
+        ));
     }
     if let Some(query_files) = params_file_config.query_files.as_ref() {
         for query_file in query_files {
@@ -401,7 +437,41 @@ where
     let mut args = raw_args.into_iter();
 
     while let Some(arg) = args.next() {
+        commands::validate_flag(command, &arg)?;
         match arg.as_str() {
+            "--add-list" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| commands::invalid("--add-list requires a path"))?;
+                add_reference_list(
+                    &value,
+                    ParameterSource::Cli,
+                    None,
+                    skip_validation,
+                    &mut references,
+                    &mut startup_output,
+                )?;
+                startup_output
+                    .add_lists
+                    .push(startup_output.reference_lists.pop().unwrap());
+            }
+            "--remove-list" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| commands::invalid("--remove-list requires a path"))?;
+                commands::add_removals(&value, None, &mut remove_ids)?;
+                startup_output.remove_lists.push(StartupValue::new(
+                    path::absolute(value)?.to_string_lossy(),
+                    ParameterSource::Cli,
+                ));
+            }
+            "--output" if command == Command::Sketch => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| commands::invalid("--output requires a database prefix"))?;
+                sketch_path = Some(PathBuf::from(value));
+                sources.reference_sketch = Some(ParameterSource::Cli);
+            }
             "--params-file" => {
                 let _ = args.next().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--params-file requires a path")
@@ -788,6 +858,14 @@ where
         }
     }
 
+    commands::validate_operation(
+        command,
+        &references,
+        &queries,
+        sketch_path.as_deref(),
+        &remove_ids,
+        shard_filter.is_some(),
+    )?;
     if references.is_empty() && sketch_path.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -808,7 +886,7 @@ where
     let existing_sketch_requested: bool = sketch_path.as_deref().is_some_and(|prefix| {
         manifest_path(prefix).exists() || legacy_sketch_path(prefix).is_some()
     });
-    if queries.is_empty() && existing_sketch_requested {
+    if command == Command::Legacy && queries.is_empty() && existing_sketch_requested {
         eprintln!(
             "WARNING\treference sketch already exists; no query was provided, leaving it unchanged"
         );
@@ -878,6 +956,36 @@ where
             "--shards requires --reference-sketch",
         ));
     }
+    if command != Command::Legacy && command != Command::Sketch {
+        if let Some(prefix) = sketch_path.as_deref() {
+            let manifest = crate::ani::sketch::database::SketchDatabase::read_manifest(prefix)?;
+            macro_rules! inherit {
+                ($value:ident, $field:ident) => {
+                    if sources.$value.is_some() && $value != manifest.$field {
+                        return Err(commands::invalid(concat!(
+                            "conflicting saved-sketch parameter: ",
+                            stringify!($value)
+                        )));
+                    }
+                    if sources.$value.is_none() {
+                        sources.$value = Some(ParameterSource::Sketch);
+                    }
+                    $value = manifest.$field;
+                };
+            }
+            inherit!(kmer_size, k);
+            inherit!(window_size, w);
+            inherit!(minimizer_hash_seed, minimizer_hash_seed);
+            inherit!(fragment_length, fragment_length);
+            inherit!(min_fragment_length, min_fragment_length);
+            inherit!(split_n_run, split_n_run);
+            min_fragment_length_was_set = true;
+            if max_shard_size_bytes.is_none() {
+                max_shard_size_bytes = Some(manifest.max_shard_size_bytes);
+                sources.max_shard_size_bytes = Some(ParameterSource::Sketch);
+            }
+        }
+    }
     if !fragment_stride_was_set {
         fragment_stride = fragment_length;
     }
@@ -919,6 +1027,8 @@ where
     validate_max_shard_size_bytes(max_shard_size_bytes)?;
 
     let cli_args = CliArgs {
+        command,
+        remove_ids,
         references,
         queries,
         sketch_path,

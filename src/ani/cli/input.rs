@@ -122,7 +122,9 @@ pub(super) fn add_reference_file(
     ));
     let input_path = match source {
         ParameterSource::Cli => value.to_owned(),
-        ParameterSource::ParamsFile => reference_absolute_path.display().to_string(),
+        ParameterSource::ParamsFile | ParameterSource::Sketch => {
+            reference_absolute_path.display().to_string()
+        }
     };
     references.push(FastaInput::from_path(input_path));
     Ok(())
@@ -185,7 +187,9 @@ pub(super) fn add_query_file(
     ));
     let input_path = match source {
         ParameterSource::Cli => value.to_owned(),
-        ParameterSource::ParamsFile => query_absolute_path.display().to_string(),
+        ParameterSource::ParamsFile | ParameterSource::Sketch => {
+            query_absolute_path.display().to_string()
+        }
     };
     queries.push(FastaInput::from_path(input_path));
     Ok(())

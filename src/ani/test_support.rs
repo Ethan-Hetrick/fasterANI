@@ -36,6 +36,7 @@ pub(crate) fn sample_shard_manifest() -> ShardManifest {
         total_unique_minimizers: 17,
         build_args: vec!["fasterANI".to_string()],
         reference_list_checksum: 42,
+        reference_identifiers: None,
         shards: vec![ShardManifestEntry {
             shard_index: 1,
             filename: "database.1.fasketch".to_string(),

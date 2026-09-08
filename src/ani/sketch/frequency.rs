@@ -715,3 +715,115 @@ mod tests {
         Ok(())
     }
 }
+
+/// Update global counts by subtracting old affected shards and adding their
+/// replacements/new shards. Unchanged shard indexes never need to be rescanned.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_global_frequency_artifact(
+    prefix: &Path,
+    generation: &str,
+    old: &GlobalFrequencyIndex,
+    removed: &[ShardManifestEntry],
+    added: &[ShardManifestEntry],
+    params: SketchParams,
+    tmp_dir: Option<&Path>,
+    runtime: RuntimeOptions,
+) -> io::Result<GlobalFrequencyArtifactStats> {
+    fn shard_runs(
+        prefix: &Path,
+        shards: &[ShardManifestEntry],
+        params: SketchParams,
+        tmp: Option<&Path>,
+        runtime: RuntimeOptions,
+    ) -> io::Result<Option<FrequencyRun>> {
+        let mut runs = Vec::new();
+        for entry in shards {
+            let sketch = ReferenceSketch::load(
+                &crate::ani::sketch::serialize::shard_entry_path(prefix, entry),
+                params,
+                false,
+                runtime,
+            )?;
+            let ReferenceIndex::Mphf(index) = &sketch.index else {
+                return Err(io::Error::other("expected persisted MPHF index"));
+            };
+            let mut records: Vec<_> = index
+                .slot_keys()
+                .iter()
+                .zip(index.hit_counts())
+                .map(|(&key, &count)| FrequencyRecord {
+                    key,
+                    count: u64::from(count),
+                })
+                .collect();
+            records.sort_unstable_by_key(|r| r.key);
+            runs.push(write_run(&records, tmp, "update-frequency-delta")?);
+        }
+        merge_all_runs(runs, tmp)
+    }
+    let negative = shard_runs(prefix, removed, params, tmp_dir, runtime)?;
+    let positive = shard_runs(prefix, added, params, tmp_dir, runtime)?;
+    let mut minus = negative.as_ref().map(RunReader::open).transpose()?;
+    let mut plus = positive.as_ref().map(RunReader::open).transpose()?;
+    fn advance(reader: &mut Option<RunReader>) -> io::Result<Option<FrequencyRecord>> {
+        reader
+            .as_mut()
+            .map(RunReader::next_record)
+            .transpose()
+            .map(Option::flatten)
+    }
+    let mut neg = advance(&mut minus)?;
+    let mut pos = advance(&mut plus)?;
+    let mut old_index = 0;
+    let (scratch, file) = ScratchFile::create(tmp_dir, "update-global-frequencies")?;
+    let mut writer = BufWriter::new(file);
+    let mut record_count = 0;
+    loop {
+        let previous = (old_index < old.record_count).then(|| old.record(old_index));
+        let key = previous
+            .map(|r| r.0)
+            .into_iter()
+            .chain(neg.map(|r| r.key))
+            .chain(pos.map(|r| r.key))
+            .min();
+        let Some(key) = key else {
+            break;
+        };
+        let mut count = 0u64;
+        if let Some((old_key, old_count)) = previous {
+            if old_key == key {
+                count = old_count;
+                old_index += 1;
+            }
+        }
+        if neg.is_some_and(|r| r.key == key) {
+            count = count.checked_sub(neg.unwrap().count).ok_or_else(|| {
+                io::Error::other("removed frequencies exceed original database counts")
+            })?;
+            neg = advance(&mut minus)?;
+        }
+        if pos.is_some_and(|r| r.key == key) {
+            count = count
+                .checked_add(pos.unwrap().count)
+                .ok_or_else(|| io::Error::other("frequency count overflow"))?;
+            pos = advance(&mut plus)?;
+        }
+        if count != 0 {
+            write_frequency_record(&mut writer, FrequencyRecord { key, count })?;
+            record_count += 1;
+        }
+    }
+    writer.flush()?;
+    drop(writer);
+    let run = FrequencyRun {
+        scratch,
+        record_count,
+    };
+    let (file_bytes, unique_minimizers) =
+        write_frequency_artifact(&global_frequency_path(prefix, generation), Some(&run))?;
+    Ok(GlobalFrequencyArtifactStats {
+        filename: global_frequency_filename(prefix, generation),
+        file_bytes,
+        unique_minimizers,
+    })
+}
