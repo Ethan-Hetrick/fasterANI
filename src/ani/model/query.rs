@@ -24,11 +24,13 @@ pub(crate) struct QueryFragment {
 pub(crate) struct QueryFile {
     pub(crate) fragments: Vec<QueryFragment>,
     pub(crate) contig_names: Vec<String>,
+    pub(crate) contig_lengths: Vec<u64>,
+    pub(crate) contig_dropped_lengths: Vec<u64>,
     pub(crate) mapped_length: u64,
 }
 
 const QUERY_SPOOL_MAGIC: [u8; 8] = *b"FANIQRY\0";
-const QUERY_SPOOL_VERSION: u32 = 1;
+const QUERY_SPOOL_VERSION: u32 = 2;
 // Query spools are internal temporary files, but keep corrupt inputs from requesting
 // effectively unbounded allocations before an EOF or format error can be reported.
 const MAX_QUERY_SPOOL_ALLOCATION_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -54,6 +56,16 @@ impl QueryFile {
                 writer,
                 name.as_bytes(),
                 &format!("contig {contig_index} name"),
+            )?;
+            write_u64(
+                writer,
+                self.contig_lengths[contig_index],
+                &format!("contig {contig_index} length"),
+            )?;
+            write_u64(
+                writer,
+                self.contig_dropped_lengths[contig_index],
+                &format!("contig {contig_index} dropped length"),
             )?;
         }
 
@@ -118,10 +130,24 @@ impl QueryFile {
         let fragment_count = read_len(reader, "fragment count")?;
         let mut budget = AllocationBudget::new();
         budget.charge::<String>(contig_count.encoded, "contig name table")?;
+        budget.charge::<u64>(contig_count.encoded, "contig length table")?;
+        budget.charge::<u64>(contig_count.encoded, "contig dropped-length table")?;
         budget.charge::<QueryFragment>(fragment_count.encoded, "fragment table")?;
 
         let mut contig_names = Vec::new();
+        let mut contig_lengths = Vec::new();
+        let mut contig_dropped_lengths = Vec::new();
         reserve_exact(&mut contig_names, contig_count.decoded, "contig name table")?;
+        reserve_exact(
+            &mut contig_lengths,
+            contig_count.decoded,
+            "contig length table",
+        )?;
+        reserve_exact(
+            &mut contig_dropped_lengths,
+            contig_count.decoded,
+            "contig dropped-length table",
+        )?;
         for contig_index in 0..contig_count.decoded {
             let context = format!("contig {contig_index} name");
             let name_length = read_len(reader, &format!("{context} length"))?;
@@ -134,6 +160,11 @@ impl QueryFile {
                 invalid_data(format!("query spool {context} is not valid UTF-8: {error}"))
             })?;
             contig_names.push(name);
+            contig_lengths.push(read_u64(reader, &format!("contig {contig_index} length"))?);
+            contig_dropped_lengths.push(read_u64(
+                reader,
+                &format!("contig {contig_index} dropped length"),
+            )?);
         }
 
         let mut fragments = Vec::new();
@@ -169,6 +200,8 @@ impl QueryFile {
         Ok(Self {
             fragments,
             contig_names,
+            contig_lengths,
+            contig_dropped_lengths,
             mapped_length,
         })
     }
@@ -210,10 +243,28 @@ impl AllocationBudget {
 }
 
 fn validate_spool_allocation_budget(query: &QueryFile) -> io::Result<()> {
+    if query.contig_lengths.len() != query.contig_names.len()
+        || query.contig_dropped_lengths.len() != query.contig_names.len()
+    {
+        return Err(invalid_data(
+            "query contig metadata lengths do not match the contig name table",
+        ));
+    }
     let mut budget = AllocationBudget::new();
     budget.charge::<String>(
         usize_to_u64(query.contig_names.len(), "contig count")?,
         "contig name table",
+    )?;
+    budget.charge::<u64>(
+        usize_to_u64(query.contig_lengths.len(), "contig length count")?,
+        "contig length table",
+    )?;
+    budget.charge::<u64>(
+        usize_to_u64(
+            query.contig_dropped_lengths.len(),
+            "contig dropped-length count",
+        )?,
+        "contig dropped-length table",
     )?;
     budget.charge::<QueryFragment>(
         usize_to_u64(query.fragments.len(), "fragment count")?,
@@ -523,6 +574,8 @@ mod tests {
                 },
             ],
             contig_names: vec!["first contig".to_owned(), "β-contig".to_owned()],
+            contig_lengths: vec![5, 29],
+            contig_dropped_lengths: vec![0, 11],
             mapped_length: u64::from(u32::MAX) + 19,
         }
     }
@@ -536,6 +589,11 @@ mod tests {
     fn assert_query_eq(actual: &QueryFile, expected: &QueryFile) {
         assert_eq!(actual.mapped_length, expected.mapped_length);
         assert_eq!(actual.contig_names, expected.contig_names);
+        assert_eq!(actual.contig_lengths, expected.contig_lengths);
+        assert_eq!(
+            actual.contig_dropped_lengths,
+            expected.contig_dropped_lengths
+        );
         assert_eq!(actual.fragments.len(), expected.fragments.len());
         for (actual, expected) in actual.fragments.iter().zip(&expected.fragments) {
             assert_eq!(actual.id, expected.id);
@@ -644,6 +702,8 @@ mod tests {
         let mut invalid_utf8 = encode(&QueryFile {
             fragments: Vec::new(),
             contig_names: vec!["x".to_owned()],
+            contig_lengths: vec![1],
+            contig_dropped_lengths: vec![1],
             mapped_length: 0,
         });
         // Header is 36 bytes, followed by the first name length and then its bytes.

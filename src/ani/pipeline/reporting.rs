@@ -79,14 +79,22 @@ pub(super) fn write_results_header(output: &mut dyn Write, per_contig: bool) -> 
     if per_contig {
         writeln!(
             output,
-            "query_file\treference_file\tquery_contig\teligible_fragments\tshared_fragments\tshared_bases\tANI\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80"
+            "query_file\treference_file\tquery_contig\teligible_fragments\tshared_fragments\tshared_bases\tANI\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80\tlength_dropped"
         )
     } else {
         writeln!(
             output,
-            "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80"
+            "query_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80\tfraction_genome_dropped"
         )
     }
+}
+
+fn fraction_genome_dropped(query_file: &QueryFile) -> f64 {
+    let total_length: u64 = query_file.contig_lengths.iter().sum();
+    if total_length == 0 {
+        return f64::NAN;
+    }
+    query_file.contig_dropped_lengths.iter().sum::<u64>() as f64 / total_length as f64
 }
 
 fn aggregate_values(
@@ -124,12 +132,13 @@ fn write_aggregate_summary_comments(
     summaries: &[AniSummary],
     query_path: &str,
     query_mapped_length: u64,
+    fraction_dropped: f64,
     fragment_length: u32,
     output: &mut dyn Write,
 ) -> io::Result<()> {
     writeln!(
         output,
-        "# aggregate_summary_header\tquery_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80"
+        "# aggregate_summary_header\tquery_file\treference_file\tANI\tAF\ttotal_fragments\tmedian_ANI\tstddev\tMAD\tci_95_upper\tci_95_lower\tF99\tF80\tfraction_genome_dropped"
     )?;
 
     for (reference_file, summary) in reference_files.iter().zip(summaries) {
@@ -138,7 +147,7 @@ fn write_aggregate_summary_comments(
         let stats = summary.distribution_stats;
         writeln!(
             output,
-            "# aggregate_summary\t{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+            "# aggregate_summary\t{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{fraction_dropped:.6}",
             reference_file.path,
             stats.median,
             stats.stddev,
@@ -283,11 +292,14 @@ fn write_per_contig_results(
                 .get(contig_id)
                 .cloned()
                 .unwrap_or_else(ContigAniSummary::default);
+            if contig_summary.eligible_fragments == 0 {
+                continue;
+            }
             let summary = contig_summary.summary;
             let stats = summary.distribution_stats;
             writeln!(
                 output,
-                "{query_path}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                "{query_path}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}",
                 reference_file.path,
                 contig_name,
                 contig_summary.eligible_fragments,
@@ -301,6 +313,11 @@ fn write_per_contig_results(
                 stats.ci_95_lower,
                 stats.f99,
                 stats.f80,
+                query_file
+                    .contig_dropped_lengths
+                    .get(contig_id)
+                    .copied()
+                    .unwrap_or_default(),
             )?;
         }
     }
@@ -348,6 +365,7 @@ pub(super) fn write_query_outputs(
     let summary_elapsed: std::time::Duration = summary_start.elapsed();
 
     let query_mapped_length: u64 = query_file.mapped_length();
+    let fraction_dropped: f64 = fraction_genome_dropped(query_file);
     let mut pair_stats: PairSummaryStats = PairSummaryStats::default();
 
     if per_contig {
@@ -356,6 +374,7 @@ pub(super) fn write_query_outputs(
             &ani_computation.summaries,
             query_path,
             query_mapped_length,
+            fraction_dropped,
             fragment_length,
             output,
         )?;
@@ -386,7 +405,7 @@ pub(super) fn write_query_outputs(
         if !per_contig {
             writeln!(
                 output,
-                "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                "{query_path}\t{}\t{ani:.3}\t{aligned_fraction:.3}\t{total_fragment_equivalents:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{fraction_dropped:.6}",
                 reference_file.path,
                 stats.median,
                 stats.stddev,

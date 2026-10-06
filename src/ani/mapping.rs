@@ -81,6 +81,8 @@ impl QueryFile {
     ) -> io::Result<Self> {
         let mut fragments: Vec<QueryFragment> = Vec::new();
         let mut contig_names: Vec<String> = Vec::new();
+        let mut contig_lengths: Vec<u64> = Vec::new();
+        let mut contig_dropped_lengths: Vec<u64> = Vec::new();
         let mut mapped_length: u64 = 0u64;
         let fragment_length: usize = fragment_length as usize;
         let fragment_stride: usize = fragment_stride as usize;
@@ -97,6 +99,8 @@ impl QueryFile {
             contig_names.push(String::from_utf8_lossy(record.name()).into_owned());
             let sequence: &fasta::record::Sequence = record.sequence();
             let sequence_bytes: &[u8] = sequence.as_ref();
+            let mut covered_length: usize = 0;
+            contig_lengths.push(sequence_bytes.len() as u64);
 
             for segment_range in split_sequence_ranges(sequence_bytes, split_n_run) {
                 let segment_start: usize = segment_range.start;
@@ -107,6 +111,10 @@ impl QueryFile {
                     fragment_stride,
                     min_fragment_length,
                 );
+                if let (Some(first), Some(last)) = (fragment_ranges.first(), fragment_ranges.last())
+                {
+                    covered_length = covered_length.saturating_add(last.end - first.start);
+                }
                 fragments.reserve(fragment_ranges.len());
 
                 for fragment_range in fragment_ranges {
@@ -149,6 +157,16 @@ impl QueryFile {
                     });
                 }
             }
+            let dropped_length: u64 = (sequence_bytes.len() - covered_length) as u64;
+            contig_dropped_lengths.push(dropped_length);
+            if sequence_bytes.len() < fragment_length
+                && dropped_length == sequence_bytes.len() as u64
+            {
+                eprintln!(
+                    "WARNING: contig {} dropped as it is shorter than the window size",
+                    contig_names[contig_id]
+                );
+            }
         }
 
         if fragments.is_empty() && !allow_empty_fragments {
@@ -161,6 +179,8 @@ impl QueryFile {
         Ok(Self {
             fragments,
             contig_names,
+            contig_lengths,
+            contig_dropped_lengths,
             mapped_length,
         })
     }
@@ -215,10 +235,16 @@ impl QueryFile {
                     .iter()
                     .fold(0usize, |total, name| total.saturating_add(name.capacity())),
             );
+        let contig_metadata_bytes: usize = self
+            .contig_lengths
+            .capacity()
+            .saturating_add(self.contig_dropped_lengths.capacity())
+            .saturating_mul(size_of::<u64>());
         fragment_struct_bytes
             .saturating_add(query_minimizer_vec_bytes)
             .saturating_add(seed_minimizer_vec_bytes)
             .saturating_add(contig_name_bytes)
+            .saturating_add(contig_metadata_bytes)
     }
 }
 
@@ -886,6 +912,8 @@ mod tests {
                 },
             ],
             contig_names: vec!["query-a".to_owned(), "query-b".to_owned()],
+            contig_lengths: vec![100, 100],
+            contig_dropped_lengths: vec![0, 0],
             mapped_length: 200,
         };
         let partition_one = vec![

@@ -44,7 +44,7 @@ fn write_synthetic_fasta(path: &Path, name: &str, seed: u64, len: usize) {
 
 fn assert_expected_test_data_result(stdout: &str) {
     let fields: Vec<&str> = stdout.trim_end().split('\t').collect();
-    assert_eq!(fields.len(), 12, "unexpected result fields: {fields:?}");
+    assert_eq!(fields.len(), 13, "unexpected result fields: {fields:?}");
     assert_eq!(fields[0], "assets/test-data/Shigella_flexneri_2a_01.fna");
     assert_eq!(fields[1], "Escherichia_coli_str_K12_MG1655.fna");
     assert_eq!(
@@ -57,6 +57,61 @@ fn assert_expected_test_data_result(stdout: &str) {
             .parse::<f64>()
             .unwrap_or_else(|err| panic!("field {} was not numeric: {field:?}: {err}", index + 10));
     }
+}
+
+#[test]
+fn fragmentation_reports_dropped_bases_and_omits_short_contigs() {
+    let exe = env!("CARGO_BIN_EXE_fasterANI");
+    let temp_dir = temp_test_dir("fragmentation-dropped-bases");
+    let reference_path = temp_dir.join("reference.fna");
+    let query_path = temp_dir.join("query.fna");
+    write_synthetic_fasta(&reference_path, "reference", 0x1234_5678, 1_200);
+    write_synthetic_fasta(&query_path, "analyzed", 0x1234_5678, 650);
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&query_path)
+            .expect("open query for append"),
+        ">too-short\n{}",
+        "ACGT".repeat(25)
+    )
+    .expect("append short contig");
+
+    let output = Command::new(exe)
+        .args([
+            "--reference",
+            reference_path.to_str().expect("utf-8 reference path"),
+            "--query",
+            query_path.to_str().expect("utf-8 query path"),
+            "--fragment-length",
+            "300",
+            "--per-contig",
+            "--header",
+        ])
+        .output()
+        .expect("launch fasterANI");
+    assert!(
+        output.status.success(),
+        "binary exited with status {:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr UTF-8");
+    assert!(
+        stderr.contains("WARNING: contig too-short dropped as it is shorter than the window size")
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout UTF-8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "unexpected per-contig output: {stdout}");
+    assert!(lines[0].ends_with("\tfraction_genome_dropped"));
+    assert!(lines[1].ends_with("\t0.200000"));
+    assert!(lines[2].ends_with("\tlength_dropped"));
+    assert!(lines[3].contains("\tanalyzed\t"));
+    assert!(lines[3].ends_with("\t50"));
+    assert!(!stdout.contains("\ttoo-short\t"));
+
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]

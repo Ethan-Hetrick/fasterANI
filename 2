@@ -1,8 +1,5 @@
-//! Command-line help text.
-
-pub(super) fn usage() -> &'static str {
-    "usage: fasterANI [(--reference <ref.fa> | --reference-list <refs.txt>)...] \
-[(--query <query.fa> | --query-list <queries.txt>)...] [options]
+error: unknown argument "--header./target/debug/fasterANI"
+usage: fasterANI [(--reference <ref.fa> | --reference-list <refs.txt>)...] [(--query <query.fa> | --query-list <queries.txt>)...] [options]
 
 Commands:
   fasterANI query --reference-list refs.txt --query-list queries.txt
@@ -122,5 +119,4 @@ Resources:
                                  one bounded I/O-prefetch thread.
   --tmp <dir>                  Directory for temporary shard files.
   -h, --help                   Show help.
-  -v, --version                Show version."
-}
+  -v, --version                Show version.
